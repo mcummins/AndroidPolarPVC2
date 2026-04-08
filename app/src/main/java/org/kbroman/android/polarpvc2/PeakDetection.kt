@@ -29,6 +29,7 @@ class PeakDetection(var mActivity: MainActivity) {
     var ecgData: ECGdata = ECGdata(N_ECG_VALS)
     var pvcData: RunningAverage = RunningAverage(N_PEAKS_FOR_PVC_AVE)
     var rrData: RunningAverage = RunningAverage(N_PEAKS_FOR_RR_AVE)
+    var amplitudeData: RunningAverage = RunningAverage(N_PEAKS_FOR_RR_AVE)
     private var peakIndexes = FixedSizedList<Int>(N_PEAKS)
     private var movingAveSDsmsqdiff = RunningAveSD(MOVING_AVESD_WINDOW)
     private var last_smsqdiff: Double = -Double.MAX_VALUE
@@ -123,16 +124,27 @@ class PeakDetection(var mActivity: MainActivity) {
             val rrBefore = (ecgData.time.get(lastPeakIndex) - ecgData.time.get(prevPeakIndex) )/1e9
             val rrAfter = (ecgData.time.get(thisPeakIndex) - ecgData.time.get(lastPeakIndex) )/1e9
             val baselineRr = rrData.average().takeIf { rrData.size() >= 5 }
+
+            // Measure QRS width at half-height around R peak
+            val qrsWidth = measureQrsWidth(lastPeakIndex)
+
+            // Compare peak amplitude to baseline of normal beats
+            val peakAmplitude = ecgData.volt.get(lastPeakIndex)
+            val amplitudeRatio = if (amplitudeData.size() >= 5)
+                peakAmplitude / amplitudeData.average() else null
+
             val looksLikePVC = PVCClassifier.looksLikePVC(
                 minPeakIndex = minPeakIndex,
                 pvcTestStat = pvcTestStat,
                 rrBeforeSec = rrBefore,
                 rrAfterSec = rrAfter,
-                baselineRrSec = baselineRr
+                baselineRrSec = baselineRr,
+                qrsWidth = qrsWidth,
+                amplitudeRatio = amplitudeRatio
             )
             Log.d(
                 TAG,
-                "minPeakIndex: $minPeakIndex   pvcTestStat: ${myround(pvcTestStat, 4)}   rrBefore: ${myround(rrBefore, 3)}   rrAfter: ${myround(rrAfter, 3)}   rrBaseline: ${baselineRr?.let { myround(it, 3) } ?: "n/a"}   looksLikePVC: $looksLikePVC"
+                "minPeakIndex: $minPeakIndex   pvcTestStat: ${myround(pvcTestStat, 4)}   rrBefore: ${myround(rrBefore, 3)}   rrAfter: ${myround(rrAfter, 3)}   rrBaseline: ${baselineRr?.let { myround(it, 3) } ?: "n/a"}   qrsWidth: $qrsWidth   ampRatio: ${amplitudeRatio?.let { myround(it, 3) } ?: "n/a"}   looksLikePVC: $looksLikePVC"
             )
 
             if (looksLikePVC) {
@@ -144,19 +156,55 @@ class PeakDetection(var mActivity: MainActivity) {
                 pvcData.add(0.0)
                 pvcData.lastTime = ecgData.time.get(lastPeakIndex)/1e9
                 Log.d(TAG, "not PVC")
+
+                // Only add normal beat amplitude to baseline
+                amplitudeData.add(peakAmplitude)
             }
 
-            // get RR distance based on timestamps, in seconds
+            // Only add RR to baseline for non-PVC beats
             val rr: Double = rrBefore
-            if(rr < MAX_RR_SEC) {
+            if(!looksLikePVC && rr < MAX_RR_SEC) {
                 rrData.add(rr)
                 rrData.lastTime = ecgData.time.get(lastPeakIndex) / 1e9
-            } else {
+            } else if(rr >= MAX_RR_SEC) {
                 Log.d(TAG, "Ignoring RR = ${myround(rr, 2)} sec")
             }
         }
     }
 
+
+    fun measureQrsWidth(peakIndex: Int): Int {
+        // Estimate baseline from samples 25-35 before the R peak
+        val baselineStart = max(0, peakIndex - 35)
+        val baselineEnd = max(0, peakIndex - 25)
+        if (baselineEnd <= baselineStart) return 0
+
+        var baselineSum = 0.0
+        for (i in baselineStart until baselineEnd) {
+            baselineSum += ecgData.volt.get(i)
+        }
+        val baseline = baselineSum / (baselineEnd - baselineStart)
+
+        val peakVolt = ecgData.volt.get(peakIndex)
+        val halfHeight = (peakVolt + baseline) / 2.0
+
+        // Walk backwards from peak until voltage drops below half-height
+        var leftWidth = 0
+        for (i in peakIndex downTo max(0, peakIndex - 20)) {
+            if (ecgData.volt.get(i) >= halfHeight) leftWidth++
+            else break
+        }
+
+        // Walk forwards from peak
+        var rightWidth = 0
+        val maxForward = min(ecgData.maxIndex() - 1, peakIndex + 20)
+        for (i in (peakIndex + 1)..maxForward) {
+            if (ecgData.volt.get(i) >= halfHeight) rightWidth++
+            else break
+        }
+
+        return leftWidth + rightWidth
+    }
 
     fun adjustPeak (peak: Int): Int {
         var ecg = ArrayList<Double>()
@@ -215,6 +263,7 @@ class PeakDetection(var mActivity: MainActivity) {
     fun clear() {
         pvcData.clear()
         rrData.clear()
+        amplitudeData.clear()
         peakIndexes.clear()
         lastPeakIndex = -1
         thisPeakIndex = -1

@@ -2,23 +2,40 @@ package org.kbroman.android.polarpvc2
 
 internal object PVCClassifier {
     const val MIN_POST_R_NADIR_INDEX = 5
-    const val TEST_STAT_THRESHOLD = 0.78
+    const val TEST_STAT_THRESHOLD = 0.65
+    const val STRONG_TEST_STAT_THRESHOLD = 0.78
     const val PREMATURE_RR_RATIO = 0.90
     const val POST_RR_RATIO = 1.05
     const val COMPENSATORY_SUM_LOWER_RATIO = 1.80
     const val COMPENSATORY_SUM_UPPER_RATIO = 2.20
+    const val QRS_WIDTH_PVC_THRESHOLD = 14  // samples at 130 Hz (~108 ms; normal QRS < 100 ms)
+    const val AMPLITUDE_DEVIATION_THRESHOLD = 0.30  // 30% deviation from baseline amplitude
 
     fun looksLikePVC(
         minPeakIndex: Int,
         pvcTestStat: Double,
         rrBeforeSec: Double? = null,
         rrAfterSec: Double? = null,
-        baselineRrSec: Double? = null
+        baselineRrSec: Double? = null,
+        qrsWidth: Int = 0,
+        amplitudeRatio: Double? = null
     ): Boolean {
         if (minPeakIndex < 0) return false
         if (pvcTestStat <= TEST_STAT_THRESHOLD) return false
+
+        // Compensatory pause is strong evidence on its own
         if (hasCompensatoryPause(rrBeforeSec, rrAfterSec, baselineRrSec)) return true
-        return minPeakIndex >= MIN_POST_R_NADIR_INDEX
+
+        // Wide QRS is strong evidence of ventricular origin
+        if (qrsWidth >= QRS_WIDTH_PVC_THRESHOLD) return true
+
+        // Abnormal amplitude combined with late nadir
+        if (hasAbnormalAmplitude(amplitudeRatio) && minPeakIndex >= MIN_POST_R_NADIR_INDEX - 2) return true
+
+        // Original nadir check requires stronger morphology signal
+        if (pvcTestStat > STRONG_TEST_STAT_THRESHOLD && minPeakIndex >= MIN_POST_R_NADIR_INDEX) return true
+
+        return false
     }
 
     fun calcTestStat(values: List<Double>): Double {
@@ -40,6 +57,11 @@ internal object PVCClassifier {
         }
 
         return countBelowMidRange.toDouble() / values.size.toDouble()
+    }
+
+    internal fun hasAbnormalAmplitude(amplitudeRatio: Double?): Boolean {
+        if (amplitudeRatio == null) return false
+        return kotlin.math.abs(1.0 - amplitudeRatio) > AMPLITUDE_DEVIATION_THRESHOLD
     }
 
     private fun hasCompensatoryPause(

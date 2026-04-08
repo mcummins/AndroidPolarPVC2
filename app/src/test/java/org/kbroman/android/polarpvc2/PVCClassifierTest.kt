@@ -71,4 +71,85 @@ class PVCClassifierTest {
     fun looksLikePVC_acceptsDelayedNadirWithStrongStatistic() {
         assertTrue(PVCClassifier.looksLikePVC(6, 0.9474))
     }
+
+    // --- New tests for QRS width ---
+
+    @Test
+    fun looksLikePVC_acceptsWideQrsWithModerateStatistic() {
+        assertTrue(
+            PVCClassifier.looksLikePVC(
+                minPeakIndex = 2,
+                pvcTestStat = 0.70,
+                qrsWidth = 16
+            )
+        )
+    }
+
+    @Test
+    fun looksLikePVC_rejectsNarrowQrsWithModerateStatistic() {
+        assertFalse(
+            PVCClassifier.looksLikePVC(
+                minPeakIndex = 2,
+                pvcTestStat = 0.70,
+                qrsWidth = 10
+            )
+        )
+    }
+
+    // --- New tests for amplitude ---
+
+    @Test
+    fun looksLikePVC_acceptsAbnormalAmplitudeWithLateNadir() {
+        assertTrue(
+            PVCClassifier.looksLikePVC(
+                minPeakIndex = 3,
+                pvcTestStat = 0.70,
+                amplitudeRatio = 0.60  // 40% lower than baseline
+            )
+        )
+    }
+
+    @Test
+    fun looksLikePVC_acceptsHighAmplitudeWithLateNadir() {
+        assertTrue(
+            PVCClassifier.looksLikePVC(
+                minPeakIndex = 4,
+                pvcTestStat = 0.70,
+                amplitudeRatio = 1.45  // 45% higher than baseline
+            )
+        )
+    }
+
+    @Test
+    fun looksLikePVC_rejectsNormalAmplitudeWithEarlyNadir() {
+        assertFalse(
+            PVCClassifier.looksLikePVC(
+                minPeakIndex = 1,
+                pvcTestStat = 0.70,
+                amplitudeRatio = 1.05  // normal amplitude
+            )
+        )
+    }
+
+    // --- hasAbnormalAmplitude ---
+
+    @Test
+    fun hasAbnormalAmplitude_detectsLowAmplitude() {
+        assertTrue(PVCClassifier.hasAbnormalAmplitude(0.60))
+    }
+
+    @Test
+    fun hasAbnormalAmplitude_detectsHighAmplitude() {
+        assertTrue(PVCClassifier.hasAbnormalAmplitude(1.50))
+    }
+
+    @Test
+    fun hasAbnormalAmplitude_rejectsNormalAmplitude() {
+        assertFalse(PVCClassifier.hasAbnormalAmplitude(1.10))
+    }
+
+    @Test
+    fun hasAbnormalAmplitude_rejectsNull() {
+        assertFalse(PVCClassifier.hasAbnormalAmplitude(null))
+    }
 }
