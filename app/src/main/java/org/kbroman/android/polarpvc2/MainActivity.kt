@@ -35,7 +35,7 @@ import kotlin.math.round
 private lateinit var binding: ActivityMainBinding
 
 class MainActivity : AppCompatActivity() {
-    private var deviceId: String = "D45EC729"
+    private var deviceId: String = "13DFA538"
     private var ecgDisposable: Disposable? = null
     private var deviceConnected = false
     private var bluetoothEnabled = false

@@ -18,6 +18,8 @@ class ECGplotter (private var mActivity: MainActivity?, private var Plot: XYPlot
         private const val TAG = "PolarPVC2app_plot"
         private const val SEC_TO_PLOT: Double = 10.0   // Show this many seconds
         private const val N_TOTAL_POINTS: Int = 130*10   // corresponding number of ECG data points
+        private const val ECG_Y_MIN: Double = -1.2
+        private const val ECG_Y_MAX: Double = 3.0
     }
 
     // ECG
@@ -61,7 +63,7 @@ class ECGplotter (private var mActivity: MainActivity?, private var Plot: XYPlot
     fun setupPlot() {
         try {
             // range (y-axis)
-            Plot!!.setRangeBoundaries(-1.5, 1.5, BoundaryMode.FIXED)
+            Plot!!.setRangeBoundaries(ECG_Y_MIN, ECG_Y_MAX, BoundaryMode.FIXED)
             Plot!!.setRangeStep(StepMode.INCREMENT_BY_VAL, 0.5)
             Plot!!.setUserRangeOrigin(0.0)
 

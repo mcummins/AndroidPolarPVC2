@@ -15,8 +15,6 @@ class PeakDetection(var mActivity: MainActivity) {
         private const val N_PEAKS: Int = 150*5
         private const val N_PEAKS_FOR_RR_AVE = 25
         private const val N_PEAKS_FOR_PVC_AVE = 100
-        private const val PVC_RS_DIST: Double = 5.0
-        private const val PVC_TEST_STAT_THRESH: Double = 0.78
         private const val INITIAL_PEAKS_TO_SKIP = 4
         private const val INITIAL_ECG_TO_SKIP = 500
         private const val MIN_PEAK_VALUE: Double = 1.5
@@ -120,11 +118,24 @@ class PeakDetection(var mActivity: MainActivity) {
                 min((thisPeakIndex - lastPeakIndex).toDouble() / 2.0, 20.0).toInt()
 
             for (i in 1 until endSearch) temp_ecg.add(ecgData.volt.get(lastPeakIndex + i))
-            val minPeakIndex = which_min(temp_ecg)  // compare to PVC_RS_DIST
-            val pvcTestStat = calcPVCTestStat(temp_ecg) // compare to PVC_TEST_STAT_THRESH
-            Log.d(TAG, "minPeakIndex: $minPeakIndex   pvcTestStat: ${myround(pvcTestStat, 4)}")
+            val minPeakIndex = which_min(temp_ecg)
+            val pvcTestStat = PVCClassifier.calcTestStat(temp_ecg)
+            val rrBefore = (ecgData.time.get(lastPeakIndex) - ecgData.time.get(prevPeakIndex) )/1e9
+            val rrAfter = (ecgData.time.get(thisPeakIndex) - ecgData.time.get(lastPeakIndex) )/1e9
+            val baselineRr = rrData.average().takeIf { rrData.size() >= 5 }
+            val looksLikePVC = PVCClassifier.looksLikePVC(
+                minPeakIndex = minPeakIndex,
+                pvcTestStat = pvcTestStat,
+                rrBeforeSec = rrBefore,
+                rrAfterSec = rrAfter,
+                baselineRrSec = baselineRr
+            )
+            Log.d(
+                TAG,
+                "minPeakIndex: $minPeakIndex   pvcTestStat: ${myround(pvcTestStat, 4)}   rrBefore: ${myround(rrBefore, 3)}   rrAfter: ${myround(rrAfter, 3)}   rrBaseline: ${baselineRr?.let { myround(it, 3) } ?: "n/a"}   looksLikePVC: $looksLikePVC"
+            )
 
-            if (pvcTestStat > PVC_TEST_STAT_THRESH) { // looks like a PVC
+            if (looksLikePVC) {
                 pvcData.add(1.0)
                 pvcData.lastTime = ecgData.time.get(lastPeakIndex)/1e9
                 Log.wtf(TAG, "*** PVC ***")
@@ -136,7 +147,7 @@ class PeakDetection(var mActivity: MainActivity) {
             }
 
             // get RR distance based on timestamps, in seconds
-            val rr: Double = (ecgData.time.get(lastPeakIndex) - ecgData.time.get(prevPeakIndex) )/1e9
+            val rr: Double = rrBefore
             if(rr < MAX_RR_SEC) {
                 rrData.add(rr)
                 rrData.lastTime = ecgData.time.get(lastPeakIndex) / 1e9
@@ -199,32 +210,6 @@ class PeakDetection(var mActivity: MainActivity) {
         }
 
         return (min_index)
-    }
-
-    // test statistic for determining PVC
-    //    as proportion of values (from peak to half-way to next peak) that are below
-    //    the mid-point of the range of those values
-    private fun calcPVCTestStat(v: ArrayList<Double>): Double {
-        var n = v.size
-        var count: Int = 0
-
-        if(n==0) return(0.0)
-
-        var min = v[0]
-        var max = v[0]
-
-        for(vv in v) {
-            if(vv < min) min = vv
-            if(vv > max) max = vv
-        }
-
-        var mid_range = (max + min)/2.0
-
-
-        for (vv in v) {
-            if(vv < mid_range) count++
-        }
-        return count.toDouble() / n.toDouble()
     }
 
     fun clear() {
