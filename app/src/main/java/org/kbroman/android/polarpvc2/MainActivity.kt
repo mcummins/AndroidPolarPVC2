@@ -342,6 +342,10 @@ class MainActivity : AppCompatActivity() {
                             val pvc_ave: Double = pd.pvcData.average() * 100.0
                             Log.d(TAG, "pvc = ${myround(pvc_ave, 0)}   hr=${myround(hr_bpm, 1)}")
                             binding.pvcTextView.text = "${Math.round(pvc_ave)}% pvc"
+                            if (pd.totalBeats > 0) {
+                                val pvcTotal = Math.round(pd.totalPVCs.toDouble() / pd.totalBeats * 100.0)
+                                binding.pvcTotalTextView.text = "(${pvcTotal}% total)"
+                            }
                             binding.hrTextView.text = "${Math.round(hr_bpm)} bpm"
 
 

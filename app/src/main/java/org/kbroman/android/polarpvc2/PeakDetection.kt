@@ -30,6 +30,8 @@ class PeakDetection(var mActivity: MainActivity) {
     var pvcData: RunningAverage = RunningAverage(N_PEAKS_FOR_PVC_AVE)
     var rrData: RunningAverage = RunningAverage(N_PEAKS_FOR_RR_AVE)
     var amplitudeData: RunningAverage = RunningAverage(N_PEAKS_FOR_RR_AVE)
+    var totalBeats: Int = 0
+    var totalPVCs: Int = 0
     private var peakIndexes = FixedSizedList<Int>(N_PEAKS)
     private var movingAveSDsmsqdiff = RunningAveSD(MOVING_AVESD_WINDOW)
     private var last_smsqdiff: Double = -Double.MAX_VALUE
@@ -147,7 +149,9 @@ class PeakDetection(var mActivity: MainActivity) {
                 "minPeakIndex: $minPeakIndex   pvcTestStat: ${myround(pvcTestStat, 4)}   rrBefore: ${myround(rrBefore, 3)}   rrAfter: ${myround(rrAfter, 3)}   rrBaseline: ${baselineRr?.let { myround(it, 3) } ?: "n/a"}   qrsWidth: $qrsWidth   ampRatio: ${amplitudeRatio?.let { myround(it, 3) } ?: "n/a"}   looksLikePVC: $looksLikePVC"
             )
 
+            totalBeats++
             if (looksLikePVC) {
+                totalPVCs++
                 pvcData.add(1.0)
                 pvcData.lastTime = ecgData.time.get(lastPeakIndex)/1e9
                 Log.wtf(TAG, "*** PVC ***")
@@ -265,6 +269,8 @@ class PeakDetection(var mActivity: MainActivity) {
         rrData.clear()
         amplitudeData.clear()
         peakIndexes.clear()
+        totalBeats = 0
+        totalPVCs = 0
         lastPeakIndex = -1
         thisPeakIndex = -1
     }

@@ -87,6 +87,18 @@
                 app:layout_constraintTop_toTopOf="parent" />
 
             <TextView
+                android:id="@+id/pvc_total_textView"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="75dp"
+                android:text=""
+                android:textColor="@color/blue"
+                android:textSize="20sp"
+                app:layout_constraintStart_toEndOf="@+id/hr_textView"
+                app:layout_constraintEnd_toStartOf="@+id/pvc_textView"
+                app:layout_constraintTop_toTopOf="parent" />
+
+            <TextView
                 android:id="@+id/pvc_textView"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"

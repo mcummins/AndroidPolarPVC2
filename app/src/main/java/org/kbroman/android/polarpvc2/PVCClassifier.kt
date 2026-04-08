@@ -3,14 +3,19 @@ package org.kbroman.android.polarpvc2
 internal object PVCClassifier {
     const val MIN_POST_R_NADIR_INDEX = 5
     const val TEST_STAT_THRESHOLD = 0.65
-    const val STRONG_TEST_STAT_THRESHOLD = 0.78
     const val PREMATURE_RR_RATIO = 0.90
     const val POST_RR_RATIO = 1.05
     const val COMPENSATORY_SUM_LOWER_RATIO = 1.80
     const val COMPENSATORY_SUM_UPPER_RATIO = 2.20
     const val QRS_WIDTH_PVC_THRESHOLD = 14  // samples at 130 Hz (~108 ms; normal QRS < 100 ms)
     const val AMPLITUDE_DEVIATION_THRESHOLD = 0.30  // 30% deviation from baseline amplitude
+    const val EVIDENCE_THRESHOLD = 2  // need at least 2 independent signals
 
+    /**
+     * Evidence-scoring approach: each independent signal contributes points.
+     * Compensatory pause counts double (very strong evidence).
+     * A beat needs >= 2 points to be classified as PVC.
+     */
     fun looksLikePVC(
         minPeakIndex: Int,
         pvcTestStat: Double,
@@ -21,21 +26,22 @@ internal object PVCClassifier {
         amplitudeRatio: Double? = null
     ): Boolean {
         if (minPeakIndex < 0) return false
-        if (pvcTestStat <= TEST_STAT_THRESHOLD) return false
 
-        // Compensatory pause is strong evidence on its own
-        if (hasCompensatoryPause(rrBeforeSec, rrAfterSec, baselineRrSec)) return true
+        var evidence = 0
 
-        // Wide QRS is strong evidence of ventricular origin
-        if (qrsWidth >= QRS_WIDTH_PVC_THRESHOLD) return true
+        if (pvcTestStat > TEST_STAT_THRESHOLD) evidence++
+        if (qrsWidth >= QRS_WIDTH_PVC_THRESHOLD) evidence++
+        if (hasAbnormalAmplitude(amplitudeRatio)) evidence++
+        if (minPeakIndex >= MIN_POST_R_NADIR_INDEX) evidence++
 
-        // Abnormal amplitude combined with late nadir
-        if (hasAbnormalAmplitude(amplitudeRatio) && minPeakIndex >= MIN_POST_R_NADIR_INDEX - 2) return true
+        // Compensatory pause is strong evidence (counts as 2).
+        // Premature timing alone is too noisy (normal HRV) so it is
+        // only used inside compensatory-pause detection.
+        if (hasCompensatoryPause(rrBeforeSec, rrAfterSec, baselineRrSec)) {
+            evidence += 2
+        }
 
-        // Original nadir check requires stronger morphology signal
-        if (pvcTestStat > STRONG_TEST_STAT_THRESHOLD && minPeakIndex >= MIN_POST_R_NADIR_INDEX) return true
-
-        return false
+        return evidence >= EVIDENCE_THRESHOLD
     }
 
     fun calcTestStat(values: List<Double>): Double {
@@ -62,6 +68,11 @@ internal object PVCClassifier {
     internal fun hasAbnormalAmplitude(amplitudeRatio: Double?): Boolean {
         if (amplitudeRatio == null) return false
         return kotlin.math.abs(1.0 - amplitudeRatio) > AMPLITUDE_DEVIATION_THRESHOLD
+    }
+
+    internal fun isPremature(rrBeforeSec: Double?, baselineRrSec: Double?): Boolean {
+        if (rrBeforeSec == null || baselineRrSec == null || baselineRrSec <= 0.0) return false
+        return rrBeforeSec < baselineRrSec * PREMATURE_RR_RATIO
     }
 
     private fun hasCompensatoryPause(

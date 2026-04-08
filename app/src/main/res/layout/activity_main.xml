@@ -87,6 +87,16 @@
                 android:textSize="28sp" />
 
             <TextView
+                android:id="@+id/pvc_total_textView"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center"
+                android:text=""
+                android:textColor="@color/blue"
+                android:textSize="20sp" />
+
+            <TextView
                 android:id="@+id/pvc_textView"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
