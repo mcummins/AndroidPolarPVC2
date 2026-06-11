@@ -64,20 +64,61 @@ Deployed and working on the phone as of 2026-06-11.
 
 ## Planned next (in rough priority order)
 
+0. TOMORROW (needs real data + sensor): capture a real recording,
+   hand-annotate a sample, re-tune `ClassifierConfig` offline. Then port
+   the offline labeler to the phone for accurate live stats — whole-signal
+   Pan–Tompkins on a 3–5s-delayed sliding buffer (fixes the half-batch
+   merge limit) + running normal-beat template correlation (the key
+   discriminating feature, self-adapts to electrode drift). Reuse the
+   offline feature defs + tuned thresholds; add a mock-data parity test so
+   Kotlin and Python labels can't silently drift. Offline pipeline stays
+   the validated burden source; phone number is a live preview. ~1 day.
 1. Beat/feature logging: second CSV per hour with beat timestamp, RR,
    classification, feature values (testStat, qrsWidth, ampRatio) — ground
    truth material for validating/refining the classifier.
 2. Accelerometer streaming from the H10 (200Hz, or per-minute activity
    summaries) for exercise-trigger analysis; optional event-marker button
    (caffeine, lying down, etc.).
-3. Offline analysis pipeline (Python): beat detection + morphology-based
-   PVC classification, coverage stats, hourly/daily burden reports;
-   validate against hand-annotated sample.
+3. Offline analysis pipeline (Python): PVC labeling done (see below);
+   still to do — coverage stats (from events CSV) and hourly/daily burden
+   reports, and re-tuning ClassifierConfig against a hand-annotated real
+   sample once one exists.
+
+## Offline analysis (`analysis/`)
+
+Python package `polarpvc` (numpy/scipy; venv in `analysis/.venv`,
+gitignored). Stage 1 = PVC labeling, done and validated:
+- `io.py` loads the app CSV (ns→s, µV→mV), splits at dropout gaps into
+  segments. `detect.py` = whole-signal Pan–Tompkins R-peak detection per
+  segment (no half-batch limit). `features.py` = RR timing vs robust local
+  baseline, QRS width (energy envelope), amplitude/polarity, and
+  correlation to a template of the patient's own normal beats.
+  `classify.py` = PVC if aberrant complex (wide AND low template corr) AND
+  abnormal timing (premature OR compensatory), or strongly aberrant alone;
+  thresholds in `ClassifierConfig`. `pipeline.py` writes a per-beat CSV.
+- `mockdata.py` generates synthetic ECG (app format) with ground-truth
+  PVC labels for validation without real data. `scripts/`: `make_mock.py`,
+  `label_pvcs.py`, `evaluate_mock.py`. Tests: `analysis/tests/` (unittest).
+- Validation: ~1.0 sensitivity/precision on clean synthetic signals,
+  within ±1pp burden under 4× noise. Re-tune `ClassifierConfig` against a
+  hand-annotated real sample before trusting on real ECG.
+
+Stage 2 = exploration report: `windows.py` pools labeled beats into 30s
+windows (burden, mean HR, time-of-day, date, rhythm-state fractions) and
+detects bigeminy/trigeminy runs; `report.py` writes a self-contained
+interactive HTML page (no CDN — embedded JSON + canvas JS, opens offline
+from Dropbox) with burden-vs-HR, vs-time-of-day, vs-day (each with a
+per-window-dots / binned toggle), and a rhythm-states-over-time chart.
+`scripts/make_report.py` (real files/globs/dirs) and `scripts/make_demo.py`
+(synthetic multi-day demo via `mockdata.generate_session`/`diurnal_blocks`,
+with HR-dependent burden + bigeminy bouts). Burden uses recorded windows
+only (gaps excluded, not zero-filled); times local.
 
 ## Known issues / notes
 
 - `find_peaks` detects max one peak per half-batch (~0.28s) — may merge
-  beats above ~160bpm (exercise); offline reanalysis mitigates.
+  beats above ~160bpm (exercise); offline reanalysis mitigates (the
+  offline detector has no such limit).
 - Polar H10 device ID default hardcoded `13DFA538`; actual ID persisted to
   prefs on connect.
 - Each reinstall briefly interrupts capture; service auto-resumes.

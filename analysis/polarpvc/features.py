@@ -1,0 +1,219 @@
+"""Per-beat feature extraction.
+
+For each detected R-peak we compute the features that distinguish PVCs
+from normal sinus beats:
+
+  * timing — RR before/after vs a local baseline RR (prematurity,
+    compensatory pause)
+  * morphology — correlation of the beat's QRS-T window against a template
+    built from the normal beats (PVCs are aberrant, so they correlate
+    poorly)
+  * QRS width — PVCs are wide (>~120 ms); measured from the energy
+    envelope around the R-peak
+  * amplitude and polarity — PVCs are often taller and/or inverted
+
+Offline we can build a template and a robust local baseline RR, which the
+streaming on-phone classifier cannot.
+"""
+
+from __future__ import annotations
+
+from dataclasses import dataclass
+
+import numpy as np
+from scipy.signal import butter, filtfilt
+
+from .io import EcgRecord
+
+# morphology window around the R-peak (seconds)
+_MORPH_PRE_S = 0.12
+_MORPH_POST_S = 0.20
+# QRS width search window around R (seconds)
+_QRS_HALF_S = 0.10
+# fraction of the per-beat energy peak defining QRS onset/offset
+_QRS_ENVELOPE_FRAC = 0.15
+# beats on each side used for the local baseline RR (rolling median)
+_BASELINE_RR_BEATS = 8
+
+
+@dataclass
+class BeatFeatures:
+    index: int  # sample index into the record
+    t: float  # time (s, epoch)
+    rr_before: float  # s (nan if unknown)
+    rr_after: float  # s (nan if unknown)
+    baseline_rr: float  # s (nan if unknown)
+    prematurity: float  # rr_before / baseline_rr
+    compensatory: float  # (rr_before + rr_after) / baseline_rr
+    qrs_width_ms: float
+    amplitude_mv: float  # peak deflection above local baseline
+    polarity: int  # +1 upright, -1 inverted
+    template_corr: float  # correlation to normal template ([-1, 1])
+
+
+def _bandpass(sig, fs, lo, hi):
+    nyq = 0.5 * fs
+    hi = min(hi, nyq * 0.99)
+    b, a = butter(2, [lo / nyq, hi / nyq], btype="band")
+    return filtfilt(b, a, sig)
+
+
+def _energy_envelope(sig, fs):
+    filt = _bandpass(sig, fs, 5.0, 25.0)
+    sq = filt ** 2
+    win = max(1, int(round(0.05 * fs)))
+    return np.convolve(sq, np.ones(win) / win, mode="same")
+
+
+def _qrs_width_ms(envelope, r_idx, fs):
+    half = max(1, int(round(_QRS_HALF_S * fs)))
+    lo = max(0, r_idx - half)
+    hi = min(envelope.size, r_idx + half + 1)
+    local = envelope[lo:hi]
+    if local.size == 0:
+        return 0.0
+    peak = local.max()
+    if peak <= 0:
+        return 0.0
+    thr = peak * _QRS_ENVELOPE_FRAC
+    r_local = r_idx - lo
+    # walk left/right from the R-peak to where energy falls below threshold
+    left = r_local
+    while left > 0 and local[left] > thr:
+        left -= 1
+    right = r_local
+    while right < local.size - 1 and local[right] > thr:
+        right += 1
+    return (right - left) / fs * 1000.0
+
+
+def _baseline_mv(mv, fs, r_idx):
+    """Local baseline level just before the QRS (PR-segment region)."""
+    a = max(0, r_idx - int(round(0.12 * fs)))
+    b = max(0, r_idx - int(round(0.06 * fs)))
+    if b <= a:
+        return 0.0
+    return float(np.median(mv[a:b]))
+
+
+def _rolling_baseline_rr(rr: np.ndarray) -> np.ndarray:
+    """Robust local baseline RR per interval (median of surrounding RRs).
+
+    PVCs perturb individual RRs but are sparse, so a windowed median gives
+    the underlying sinus RR even around an ectopic beat."""
+    n = rr.size
+    out = np.full(n, np.nan)
+    k = _BASELINE_RR_BEATS
+    for i in range(n):
+        lo = max(0, i - k)
+        hi = min(n, i + k + 1)
+        window = rr[lo:hi]
+        window = window[np.isfinite(window)]
+        if window.size:
+            out[i] = np.median(window)
+    return out
+
+
+def _build_template(windows, valid_mask):
+    """Median normal-beat waveform from beats flagged as template-eligible."""
+    sel = windows[valid_mask]
+    if sel.shape[0] < 5:
+        sel = windows  # fall back to all beats if too few normals
+    template = np.median(sel, axis=0)
+    return template
+
+
+def extract_features(record: EcgRecord, beats: np.ndarray) -> list[BeatFeatures]:
+    fs = record.fs
+    mv = record.mv
+    t = record.t
+    n = beats.size
+    if n == 0:
+        return []
+
+    pre = int(round(_MORPH_PRE_S * fs))
+    post = int(round(_MORPH_POST_S * fs))
+    envelope = _energy_envelope(mv, fs)
+
+    # RR intervals (seconds)
+    rr_before = np.full(n, np.nan)
+    rr_after = np.full(n, np.nan)
+    times = t[beats]
+    rr_before[1:] = np.diff(times)
+    rr_after[:-1] = np.diff(times)
+    baseline_rr = _rolling_baseline_rr(
+        rr_before if n > 1 else np.array([np.nan])
+    )
+
+    # morphology windows (R-aligned), amplitude, polarity, width
+    width = np.zeros(n)
+    amp = np.zeros(n)
+    polarity = np.ones(n, dtype=int)
+    win_len = pre + post + 1
+    windows = np.zeros((n, win_len))
+    for i, r in enumerate(beats):
+        base = _baseline_mv(mv, fs, r)
+        lo = r - pre
+        hi = r + post + 1
+        if lo < 0 or hi > mv.size:
+            seg = np.zeros(win_len)
+            seg_valid = mv[max(0, lo):min(mv.size, hi)] - base
+            seg[: seg_valid.size] = seg_valid
+        else:
+            seg = mv[lo:hi] - base
+        windows[i] = seg
+        amp[i] = mv[r] - base
+        polarity[i] = 1 if amp[i] >= 0 else -1
+        width[i] = _qrs_width_ms(envelope, int(r), fs)
+
+    # template from beats that look normal a priori: not premature, modest
+    # width, upright. Prematurity needs baseline_rr, so guard for NaNs.
+    prematurity = rr_before / baseline_rr
+    median_width = np.median(width[width > 0]) if np.any(width > 0) else 0.0
+    template_eligible = (
+        (polarity > 0)
+        & (width <= median_width * 1.3 + 1e-9)
+        & (~(prematurity < 0.85))  # NaN-safe: unknown prematurity stays eligible
+    )
+    # normalise windows before templating/correlation (zero-mean, unit-norm)
+    norm_windows = _normalize_rows(windows)
+    template = _build_template(norm_windows, template_eligible)
+    template = _unit(template - template.mean())
+
+    # rows and template are unit-norm and zero-mean, so the row-wise dot
+    # product is the Pearson correlation; an explicit reduction avoids a
+    # spurious numpy matmul overflow warning
+    corr = (norm_windows * template).sum(axis=1)
+
+    feats = []
+    for i in range(n):
+        feats.append(
+            BeatFeatures(
+                index=int(beats[i]),
+                t=float(times[i]),
+                rr_before=float(rr_before[i]),
+                rr_after=float(rr_after[i]),
+                baseline_rr=float(baseline_rr[i]),
+                prematurity=float(prematurity[i]) if np.isfinite(prematurity[i]) else float("nan"),
+                compensatory=float((rr_before[i] + rr_after[i]) / baseline_rr[i])
+                if np.isfinite(rr_before[i]) and np.isfinite(rr_after[i]) and np.isfinite(baseline_rr[i])
+                else float("nan"),
+                qrs_width_ms=float(width[i]),
+                amplitude_mv=float(amp[i]),
+                polarity=int(polarity[i]),
+                template_corr=float(corr[i]),
+            )
+        )
+    return feats
+
+
+def _normalize_rows(w):
+    centered = w - w.mean(axis=1, keepdims=True)
+    norms = np.linalg.norm(centered, axis=1, keepdims=True)
+    norms[norms == 0] = 1.0
+    return centered / norms
+
+
+def _unit(v):
+    norm = np.linalg.norm(v)
+    return v / norm if norm > 0 else v
