@@ -1,7 +1,16 @@
+import java.util.Properties
+
 plugins {
     alias(libs.plugins.android.application)
     alias(libs.plugins.jetbrains.kotlin.android)
 }
+
+// Dropbox app key lives in local.properties (gitignored), not in the repo:
+//   dropbox.app.key=abcd1234efgh
+val dropboxAppKey: String = Properties().apply {
+    val f = rootProject.file("local.properties")
+    if (f.exists()) f.inputStream().use { load(it) }
+}.getProperty("dropbox.app.key", "")
 
 android {
     namespace = "org.kbroman.android.polarpvc2"
@@ -15,10 +24,14 @@ android {
         versionName = "1.0"
 
         testInstrumentationRunner = "androidx.test.runner.AndroidJUnitRunner"
+
+        buildConfigField("String", "DROPBOX_APP_KEY", "\"$dropboxAppKey\"")
+        manifestPlaceholders["dropboxAppKey"] = dropboxAppKey
     }
 
     buildFeatures {
         viewBinding = true
+        buildConfig = true
     }
 
     buildTypes {
@@ -50,6 +63,8 @@ dependencies {
     implementation(libs.material)
     implementation(libs.androidx.activity)
     implementation(libs.androidx.constraintlayout)
+    implementation(libs.androidx.work.runtime)
+    implementation(libs.dropbox.android.sdk)
     testImplementation(libs.junit)
     androidTestImplementation(libs.androidx.junit)
     androidTestImplementation(libs.androidx.espresso.core)

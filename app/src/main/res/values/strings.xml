@@ -2,4 +2,6 @@
     <string name="app_name">PolarPVC2</string>
     <string name="connect_text">Connect</string>
     <string name="record_text">Record</string>
+    <string name="dropbox_link_text">Link Dropbox</string>
+    <string name="dropbox_linked_text">Dropbox ✓</string>
 </resources>

@@ -66,6 +66,16 @@
                     android:text="Battery level n/a"
                     android:textColor="@color/black"
                     android:textSize="12sp" />
+
+                <TextView
+                    android:id="@+id/dropbox_textView"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:text="@string/dropbox_link_text"
+                    android:textColor="@color/blue"
+                    android:textSize="12sp" />
             </LinearLayout>
         </LinearLayout>
 

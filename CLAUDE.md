@@ -32,6 +32,19 @@ day-to-day burden variability. Eventually: remote logging + remote analysis.
   stream+write errors; quoted detail field) for offline coverage
   accounting. `clock_sync` event at each hourly file open anchors the H10
   sensor clock (ECG timestamps) to the phone clock (event timestamps).
+- `DropboxSync.kt` / `UploadWorker.kt` — remote logging. One-time OAuth
+  PKCE link ("Link Dropbox" in UI; refresh token in prefs). WorkManager
+  worker gzips closed csv files to the app's Dropbox folder
+  (`/Apps/<app>/`), skipping files recorded as open in prefs
+  (PREF_OPEN_ECG_FILE / PREF_OPEN_EVENTS_FILE); uploaded names tracked in
+  prefs, WriteMode.OVERWRITE for idempotency. Upload verified by
+  content_hash comparison (`DropboxContentHash.kt`); local files deleted
+  3 days after verified upload (RETENTION_MS), re-checking remote
+  existence just before deletion (re-uploads if remote copy vanished).
+  Triggers: hourly rotation, recording stop, service destroy, 6h periodic
+  backstop; network constraint + exponential backoff handles offline.
+  App key in `local.properties` (`dropbox.app.key`, not committed) →
+  BuildConfig + manifest placeholder for the auth redirect scheme.
 
 Branch: `codex-layout-and-pvc-fixes`; remote `myfork` = mcummins fork,
 `origin` = kbroman upstream. Build:
@@ -41,8 +54,9 @@ Deployed and working on the phone as of 2026-06-11.
 ## Decisions made
 
 - Remote storage target: **Dropbox** (project folder already syncs).
-  Uploader should keep local files as source of truth, upload closed
-  hourly files via WorkManager (gzip ~10x; ~340MB/day raw CSV).
+  Closed hourly files upload via WorkManager (gzip ~10x; ~340MB/day raw
+  CSV). Dropbox is the long-term store: local copies are kept only 3
+  days after hash-verified upload (phone storage), then deleted.
 - Burden measurement to ±1pp should be computed **offline** from raw ECG
   with a validated pipeline; on-phone classifier is for live display only.
   Burden error budget = coverage + classifier error; events CSV supplies
@@ -56,8 +70,7 @@ Deployed and working on the phone as of 2026-06-11.
 2. Accelerometer streaming from the H10 (200Hz, or per-minute activity
    summaries) for exercise-trigger analysis; optional event-marker button
    (caffeine, lying down, etc.).
-3. Dropbox uploader (WorkManager, gzip, retry; swappable backend).
-4. Offline analysis pipeline (Python): beat detection + morphology-based
+3. Offline analysis pipeline (Python): beat detection + morphology-based
    PVC classification, coverage stats, hourly/daily burden reports;
    validate against hand-annotated sample.
 
@@ -68,3 +81,7 @@ Deployed and working on the phone as of 2026-06-11.
 - Polar H10 device ID default hardcoded `13DFA538`; actual ID persisted to
   prefs on connect.
 - Each reinstall briefly interrupts capture; service auto-resumes.
+- Dropbox setup (one-time): create a scoped app (app-folder access,
+  files.content.write) at console.dropbox.com, put its key in
+  `local.properties` as `dropbox.app.key=...`, rebuild/install, tap
+  "Link Dropbox" in the app. Uploads land in `/Apps/<app name>/`.

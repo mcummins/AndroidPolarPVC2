@@ -39,6 +39,9 @@ class EventLog(private val context: Context) {
             writer = PrintWriter(FileWriter(filePointer!!.fileDescriptor))
             writer?.write("time,event,detail\n")
             writer?.flush()
+            // record the open file so UploadWorker won't upload it half-written
+            context.getSharedPreferences(RecordingService.PREFS_NAME, Context.MODE_PRIVATE)
+                .edit().putString(RecordingService.PREF_OPEN_EVENTS_FILE, fileName).apply()
             Log.d(TAG, "opened event log $docUri")
         } catch (ex: Exception) {
             Log.e(TAG, "Failed to open event log: $ex")
@@ -70,6 +73,8 @@ class EventLog(private val context: Context) {
         } finally {
             writer = null
             filePointer = null
+            context.getSharedPreferences(RecordingService.PREFS_NAME, Context.MODE_PRIVATE)
+                .edit().remove(RecordingService.PREF_OPEN_EVENTS_FILE).apply()
         }
     }
 }

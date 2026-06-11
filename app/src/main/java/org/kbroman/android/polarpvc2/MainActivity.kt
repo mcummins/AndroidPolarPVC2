@@ -41,6 +41,7 @@ class MainActivity : AppCompatActivity(), EcgListener {
     private var bound = false
     private var suppressSwitchCallbacks = false
     private var pendingRecordStart = false
+    private var awaitingDropboxAuth = false
 
     companion object {
         private const val TAG = "PolarPVC2app_main"
@@ -122,7 +123,28 @@ class MainActivity : AppCompatActivity(), EcgListener {
             }
         }
 
+        binding.dropboxTextView.setOnClickListener {
+            when {
+                !DropboxSync.isConfigured() ->
+                    showToast("No Dropbox app key; set dropbox.app.key in local.properties and rebuild")
+                !DropboxSync.isLinked(this) -> {
+                    awaitingDropboxAuth = true
+                    DropboxSync.startAuth(this)
+                }
+                else -> {
+                    showToast("Dropbox linked; uploading pending files")
+                    UploadWorker.enqueueNow(this)
+                }
+            }
+        }
+        updateDropboxLabel()
+
         requestNeededPermissions()
+    }
+
+    private fun updateDropboxLabel() {
+        binding.dropboxTextView.text = if (DropboxSync.isLinked(this))
+            getString(R.string.dropbox_linked_text) else getString(R.string.dropbox_link_text)
     }
 
     private fun requestNeededPermissions() {
@@ -222,6 +244,18 @@ class MainActivity : AppCompatActivity(), EcgListener {
     public override fun onResume() {
         super.onResume()
         service?.appForegrounded()
+
+        // complete a pending Dropbox auth; checked whenever unlinked (not
+        // just when awaiting) because the activity may have been recreated
+        // during the browser round-trip
+        if (!DropboxSync.isLinked(this) && DropboxSync.finishAuth(this)) {
+            showToast("Dropbox linked")
+            UploadWorker.enqueueNow(this)
+            updateDropboxLabel()
+        } else if (awaitingDropboxAuth) {
+            showToast("Dropbox linking not completed")
+        }
+        awaitingDropboxAuth = false
 
         if (ecgPlotter == null) {
             ECGplot!!.post({

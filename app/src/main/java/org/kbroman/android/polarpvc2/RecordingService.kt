@@ -53,6 +53,9 @@ class RecordingService : Service() {
         const val PREF_FILE_PATH = "PREF_FILE_PATH"
         const val PREF_DEVICE_ID = "PREF_DEVICE_ID"
         const val PREF_RECORDING = "PREF_RECORDING"
+        // names of files currently open for writing; UploadWorker skips these
+        const val PREF_OPEN_ECG_FILE = "PREF_OPEN_ECG_FILE"
+        const val PREF_OPEN_EVENTS_FILE = "PREF_OPEN_EVENTS_FILE"
         const val DEFAULT_DEVICE_ID = "13DFA538"
 
         private const val NOTIFICATION_ID = 1
@@ -132,6 +135,7 @@ class RecordingService : Service() {
         eventLog = EventLog(this)
         createNotificationChannel()
         setupApiCallback()
+        UploadWorker.schedulePeriodic(this)  // backstop for missed uploads
     }
 
     override fun onBind(intent: Intent?): IBinder = binder
@@ -175,6 +179,7 @@ class RecordingService : Service() {
         ecgDisposable = null
         wd.closeFile()
         eventLog.close()
+        UploadWorker.enqueueNow(this)  // events file just closed; upload survives service death
         releaseWakeLock()
         getSystemService(NotificationManager::class.java).cancel(NOTIFICATION_ID)
         api.shutDown()
@@ -241,6 +246,7 @@ class RecordingService : Service() {
         wd.closeFile()
         wd.timeFileOpened = -1
         eventLog.log("recording_stopped")
+        UploadWorker.enqueueNow(this)  // session boundary: upload what just closed
         releaseWakeLock()
         uiListener?.onRecordingChanged(false)
         updateNotification(force = true)
@@ -403,6 +409,8 @@ class RecordingService : Service() {
                         "clock_sync",
                         "phone_ms=${Instant.now().toEpochMilli()} polar_ns=$polarNs file=${wd.lastFileName}"
                     )
+                    // the previous hourly file just closed: upload it
+                    if (previousFileOpened > 0) UploadWorker.enqueueNow(this)
                 }
             }
         }

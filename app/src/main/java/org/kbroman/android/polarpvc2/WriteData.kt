@@ -104,6 +104,9 @@ class WriteData(private val context: Context) {
 
         timeFileOpened = Instant.now().toEpochMilli()
         lastFileName = fileName
+        // record the open file so UploadWorker won't upload it half-written
+        context.getSharedPreferences(RecordingService.PREFS_NAME, Context.MODE_PRIVATE)
+            .edit().putString(RecordingService.PREF_OPEN_ECG_FILE, fileName).apply()
         Log.d(TAG, "opened file $docUri")
         fileWriter?.write("# device=${deviceId} app_version=${appVersion} sample_rate_hz=${SAMPLE_RATE_HZ} ecg_units=uV\n")
         fileWriter?.write("time,ecg_uV\n")
@@ -131,6 +134,8 @@ class WriteData(private val context: Context) {
         } finally {
             fileWriter = null
             filePointer = null
+            context.getSharedPreferences(RecordingService.PREFS_NAME, Context.MODE_PRIVATE)
+                .edit().remove(RecordingService.PREF_OPEN_ECG_FILE).apply()
         }
     }
 }

@@ -75,6 +75,19 @@
                 app:layout_constraintTop_toBottomOf="@+id/device_textView" />
 
             <TextView
+                android:id="@+id/dropbox_textView"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2sp"
+                android:clickable="true"
+                android:focusable="true"
+                android:text="@string/dropbox_link_text"
+                android:textColor="@color/blue"
+                android:textSize="12sp"
+                app:layout_constraintStart_toStartOf="@+id/battery_textView"
+                app:layout_constraintTop_toBottomOf="@+id/battery_textView" />
+
+            <TextView
                 android:id="@+id/hr_textView"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
