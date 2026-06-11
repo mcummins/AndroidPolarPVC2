@@ -9,19 +9,36 @@ import com.polar.sdk.api.model.PolarEcgData
 import java.io.FileWriter
 import java.io.PrintWriter
 import java.time.Instant
-import java.time.LocalDateTime
+import java.time.ZoneOffset
 import java.time.format.DateTimeFormatter
 
 class WriteData(private val context: Context) {
     var timeFileOpened: Long = -1
+    var lastFileName: String = ""
+        private set
+    /** set by the service on connect; recorded in each file's metadata line */
+    var deviceId: String = ""
     private var filePointer: ParcelFileDescriptor? = null
     private var fileWriter: PrintWriter? = null
     private var lastOpenAttempt: Long = -1
+
+    private val appVersion: String by lazy {
+        try {
+            context.packageManager.getPackageInfo(context.packageName, 0).versionName ?: "unknown"
+        } catch (ex: Exception) {
+            "unknown"
+        }
+    }
 
     companion object {
         private const val TAG = "PolarPVC2app_write"
         private const val HOUR_IN_MILLI = 1000*60*60
         private const val MIN_REOPEN_INTERVAL_MILLI = 30_000L  // avoid file-creation storm on persistent failure
+        // H10 ECG stream rate; PeakDetection's buffer sizes assume the same value
+        const val SAMPLE_RATE_HZ = 130
+        // UTC filenames: local-time names are ambiguous across the DST fall-back hour
+        val FILE_TIME_FORMATTER: DateTimeFormatter =
+            DateTimeFormatter.ofPattern("yyyy-MM-dd_HHmmss").withZone(ZoneOffset.UTC)
     }
 
     /** Returns true if the batch was written successfully. */
@@ -49,12 +66,12 @@ class WriteData(private val context: Context) {
             }
         }
 
-        // write data to the file
+        // write data to the file: raw integer microvolts, lossless as delivered
+        // by the sensor (unit conversion belongs in the analysis pipeline)
         for (data in polarEcgData.samples) {
-            val voltage: Double = (data.voltage.toFloat() / 1000.0)
             val timestamp = data.timeStamp + PeakDetection.TIMESTAMP_OFFSET
 
-            fileWriter?.write("${timestamp},${voltage}\n")
+            fileWriter?.write("${timestamp},${data.voltage}\n")
         }
 
         // flush each batch (~2 KB/s) so at most one batch is lost on crash
@@ -86,16 +103,17 @@ class WriteData(private val context: Context) {
         fileWriter = PrintWriter(writer)
 
         timeFileOpened = Instant.now().toEpochMilli()
+        lastFileName = fileName
         Log.d(TAG, "opened file $docUri")
-        fileWriter?.write("time,ecg\n")
+        fileWriter?.write("# device=${deviceId} app_version=${appVersion} sample_rate_hz=${SAMPLE_RATE_HZ} ecg_units=uV\n")
+        fileWriter?.write("time,ecg_uV\n")
     }
 
     private fun getFileName(): String
     {
-        val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd_HHmmss")
-        val currentTime = LocalDateTime.now().format(formatter)
+        val currentTime = FILE_TIME_FORMATTER.format(Instant.now())
 
-        return "ecg_${currentTime}.csv"
+        return "ecg_${currentTime}Z.csv"
     }
 
     fun closeFile() {

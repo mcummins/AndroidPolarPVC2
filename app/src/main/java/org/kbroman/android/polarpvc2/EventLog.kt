@@ -8,8 +8,6 @@ import android.util.Log
 import java.io.FileWriter
 import java.io.PrintWriter
 import java.time.Instant
-import java.time.LocalDateTime
-import java.time.format.DateTimeFormatter
 
 /**
  * Append-only CSV log of session events (connect, disconnect, reconnect
@@ -30,8 +28,7 @@ class EventLog(private val context: Context) {
     fun open(treeUriString: String) {
         if (writer != null || treeUriString == "") return
         try {
-            val formatter = DateTimeFormatter.ofPattern("yyyy-MM-dd_HHmmss")
-            val fileName = "events_${LocalDateTime.now().format(formatter)}.csv"
+            val fileName = "events_${WriteData.FILE_TIME_FORMATTER.format(Instant.now())}Z.csv"
 
             val dirUri = Uri.parse(treeUriString)
             val documentId = DocumentsContract.getTreeDocumentId(dirUri)
@@ -53,7 +50,10 @@ class EventLog(private val context: Context) {
     fun log(event: String, detail: String = "") {
         Log.d(TAG, "$event $detail")
         try {
-            writer?.write("${Instant.now()},${event},${detail}\n")
+            // detail is free text (often exception messages): quote it so
+            // embedded commas/quotes/newlines can't break the CSV
+            val quoted = "\"" + detail.replace("\"", "\"\"").replace('\n', ' ') + "\""
+            writer?.write("${Instant.now()},${event},${quoted}\n")
             writer?.flush()
         } catch (ex: Exception) {
             Log.e(TAG, "Failed to write event: $ex")

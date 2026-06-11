@@ -24,6 +24,7 @@ import com.polar.sdk.api.model.PolarEcgData
 import com.polar.sdk.api.model.PolarSensorSetting
 import io.reactivex.rxjava3.android.schedulers.AndroidSchedulers
 import io.reactivex.rxjava3.disposables.Disposable
+import java.time.Instant
 import java.util.Calendar
 import java.util.Date
 import java.util.TimeZone
@@ -94,6 +95,14 @@ class RecordingService : Service() {
     private var lastHrBpm: Double = -1.0
     private var lastPvcAve: Double = -1.0
 
+    private val appVersion: String by lazy {
+        try {
+            packageManager.getPackageInfo(packageName, 0).versionName ?: "unknown"
+        } catch (ex: Exception) {
+            "unknown"
+        }
+    }
+
     /** UI attaches/detaches here; null while in background. */
     var uiListener: EcgListener? = null
         set(value) {
@@ -136,6 +145,7 @@ class RecordingService : Service() {
         if (!deviceConnected && !shouldBeConnected) {
             deviceId = prefs.getString(PREF_DEVICE_ID, DEFAULT_DEVICE_ID) ?: DEFAULT_DEVICE_ID
         }
+        wd.deviceId = deviceId
 
         when (intent?.action) {
             ACTION_CONNECT -> connect()
@@ -217,7 +227,7 @@ class RecordingService : Service() {
             .edit().putBoolean(PREF_RECORDING, true).apply()
         acquireWakeLock()
         eventLog.open(currentFilePath())
-        eventLog.log("recording_started", "device=$deviceId")
+        eventLog.log("recording_started", "device=$deviceId app_version=$appVersion")
         if (!shouldBeConnected) connect()
         uiListener?.onRecordingChanged(true)
         updateNotification(force = true)
@@ -262,6 +272,7 @@ class RecordingService : Service() {
             override fun deviceConnected(polarDeviceInfo: PolarDeviceInfo) {
                 Log.d(TAG, "Connected: ${polarDeviceInfo.deviceId}")
                 deviceId = polarDeviceInfo.deviceId
+                wd.deviceId = deviceId
                 getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
                     .edit().putString(PREF_DEVICE_ID, deviceId).apply()
                 deviceConnected = true
@@ -380,8 +391,18 @@ class RecordingService : Service() {
             val path = currentFilePath()
             if (path != "") {
                 eventLog.open(path)  // no-op if already open; handles directory chosen after start
+                val previousFileOpened = wd.timeFileOpened
                 if (!wd.writeData(path, polarEcgData)) {
                     eventLog.log("write_error", "batch not written")
+                } else if (wd.timeFileOpened != previousFileOpened && polarEcgData.samples.isNotEmpty()) {
+                    // new hourly file: anchor the sensor clock (ECG timestamps)
+                    // to the phone clock (event timestamps) for offline coverage
+                    // accounting; the two can drift over weeks
+                    val polarNs = polarEcgData.samples.first().timeStamp + PeakDetection.TIMESTAMP_OFFSET
+                    eventLog.log(
+                        "clock_sync",
+                        "phone_ms=${Instant.now().toEpochMilli()} polar_ns=$polarNs file=${wd.lastFileName}"
+                    )
                 }
             }
         }
