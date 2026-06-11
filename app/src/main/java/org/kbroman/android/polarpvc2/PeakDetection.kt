@@ -7,7 +7,7 @@ import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.round
 
-class PeakDetection(var mActivity: MainActivity) {
+class PeakDetection(var listener: EcgListener? = null) {
 
     companion object {
         private const val TAG = "PolarPVC2app_peaks"
@@ -49,10 +49,9 @@ class PeakDetection(var mActivity: MainActivity) {
             val timestamp = data.timeStamp + TIMESTAMP_OFFSET
 
             ecgData.add(timestamp, voltage)
-            mActivity.ecgPlotter!!.addValues(timestamp/1e9, voltage)
+            listener?.onEcgSample(timestamp/1e9, voltage)
         }
-        mActivity.ecgPlotter!!.updatePlot = true
-        mActivity.ecgPlotter!!.update()
+        listener?.onEcgBatchDone()
         val n = ecgData.maxIndex() - start
 
         if (ecgData.maxIndex() < INITIAL_ECG_TO_SKIP) return  // wait to start looking for peaks
@@ -97,13 +96,13 @@ class PeakDetection(var mActivity: MainActivity) {
                 last_smsqdiff = this_smsqdiff
                 lastPeakIndex = thisPeakIndex
                 peakIndexes.add(thisPeakIndex)
-                mActivity.ecgPlotter!!.addPeakValue(ecgData.time.get(thisPeakIndex)/1e9, ecgData.volt.get(thisPeakIndex))
+                listener?.onPeak(ecgData.time.get(thisPeakIndex)/1e9, ecgData.volt.get(thisPeakIndex))
             } else { // too close to previous peak
                 if (this_smsqdiff > last_smsqdiff) {
                     last_smsqdiff = this_smsqdiff
                     lastPeakIndex = thisPeakIndex
                     peakIndexes.setLast(thisPeakIndex)
-                    mActivity.ecgPlotter!!.replaceLastPeakValue(ecgData.time.get(thisPeakIndex)/1e9, ecgData.volt.get(thisPeakIndex))
+                    listener?.onPeakReplaced(ecgData.time.get(thisPeakIndex)/1e9, ecgData.volt.get(thisPeakIndex))
                     Log.d(TAG,"adjusted peak")
                 }
             }
@@ -155,7 +154,7 @@ class PeakDetection(var mActivity: MainActivity) {
                 pvcData.add(1.0)
                 pvcData.lastTime = ecgData.time.get(lastPeakIndex)/1e9
                 Log.wtf(TAG, "*** PVC ***")
-                mActivity.ecgPlotter!!.addPVCValue(ecgData.time.get(lastPeakIndex)/1e9, ecgData.volt.get(lastPeakIndex))
+                listener?.onPvc(ecgData.time.get(lastPeakIndex)/1e9, ecgData.volt.get(lastPeakIndex))
             } else {                          // not a PVC
                 pvcData.add(0.0)
                 pvcData.lastTime = ecgData.time.get(lastPeakIndex)/1e9
@@ -269,6 +268,8 @@ class PeakDetection(var mActivity: MainActivity) {
         rrData.clear()
         amplitudeData.clear()
         peakIndexes.clear()
+        movingAveSDsmsqdiff = RunningAveSD(MOVING_AVESD_WINDOW)
+        last_smsqdiff = -Double.MAX_VALUE
         totalBeats = 0
         totalPVCs = 0
         lastPeakIndex = -1
