@@ -2,162 +2,186 @@
 <LinearLayout xmlns:android="http://schemas.android.com/apk/res/android"
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
-    tools:context=".MainActivity"
+    android:id="@+id/main"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="vertical"
-    app:layout_constraintStart_toStartOf="parent"
-    android:layout_marginStart="0dp"
-    android:layout_marginTop="0dp"
-    app:layout_constraintTop_toTopOf="parent">
+    tools:context=".MainActivity">
 
-
-    <androidx.constraintlayout.widget.ConstraintLayout
-        android:id="@+id/main"
+    <LinearLayout
+        android:id="@+id/top_panel"
         android:layout_width="match_parent"
-        android:layout_height="0dp"
-        android:layout_weight="0.9">
+        android:layout_height="wrap_content"
+        android:orientation="vertical"
+        android:paddingStart="16dp"
+        android:paddingTop="12dp"
+        android:paddingEnd="16dp"
+        android:paddingBottom="12dp">
 
-        <Switch
-            android:id="@+id/connect_switch"
-            android:layout_width="wrap_content"
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginStart="20dp"
-            android:layout_marginTop="20dp"
-            android:text="@string/connect_text"
-            android:textColor="@color/black"
-            android:textSize="20sp"
-            app:layout_constraintBaseline_toBaselineOf="@+id/record_switch"
-            app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintTop_toTopOf="parent" />
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
 
-        <Switch
-            android:id="@+id/record_switch"
-            android:layout_width="wrap_content"
+            <Switch
+                android:id="@+id/connect_switch"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:text="@string/connect_text"
+                android:textColor="@color/black"
+                android:textSize="20sp" />
+
+            <Switch
+                android:id="@+id/record_switch"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="12dp"
+                android:text="@string/record_text"
+                android:textColor="@color/black"
+                android:textSize="20sp" />
+
+            <LinearLayout
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="12dp"
+                android:layout_weight="1"
+                android:gravity="end"
+                android:orientation="vertical">
+
+                <TextView
+                    android:id="@+id/device_textView"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:ellipsize="end"
+                    android:maxLines="1"
+                    android:text="No device"
+                    android:textColor="@color/black"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:id="@+id/battery_textView"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:text="Battery level n/a"
+                    android:textColor="@color/black"
+                    android:textSize="12sp" />
+
+                <TextView
+                    android:id="@+id/dropbox_textView"
+                    android:layout_width="wrap_content"
+                    android:layout_height="wrap_content"
+                    android:clickable="true"
+                    android:focusable="true"
+                    android:text="@string/dropbox_link_text"
+                    android:textColor="@color/blue"
+                    android:textSize="12sp" />
+            </LinearLayout>
+        </LinearLayout>
+
+        <LinearLayout
+            android:layout_width="match_parent"
             android:layout_height="wrap_content"
-            android:layout_marginStart="25dp"
-            android:layout_marginTop="20dp"
-            android:text="@string/record_text"
-            android:textColor="@color/black"
-            android:textSize="20sp"
-            app:layout_constraintStart_toEndOf="@+id/connect_switch"
-            app:layout_constraintTop_toTopOf="parent" />
+            android:layout_marginTop="8dp"
+            android:baselineAligned="false"
+            android:gravity="center_vertical"
+            android:orientation="horizontal">
 
-        <TextView
-            android:id="@+id/device_textView"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="20dp"
-            android:text="No device"
-            android:textColor="@color/black"
-            android:textSize="12sp"
-            app:layout_constraintStart_toStartOf="@+id/battery_textView"
-            app:layout_constraintTop_toTopOf="parent" />
+            <TextView
+                android:id="@+id/hr_textView"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:text="HR"
+                android:textColor="@color/red"
+                android:textSize="28sp" />
 
-        <TextView
-            android:id="@+id/battery_textView"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="2sp"
-            android:layout_marginEnd="20dp"
-            android:text="Battery level n/a"
-            android:textColor="@color/black"
-            android:textSize="12sp"
-            app:layout_constraintEnd_toEndOf="parent"
-            app:layout_constraintTop_toBottomOf="@+id/device_textView" />
+            <TextView
+                android:id="@+id/pvc_total_textView"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_weight="1"
+                android:gravity="center"
+                android:text=""
+                android:textColor="@color/blue"
+                android:textSize="20sp" />
 
-        <TextView
-            android:id="@+id/hr_textView"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginStart="20dp"
-            android:layout_marginTop="70dp"
-            android:text="HR"
-            android:textColor="@color/red"
-            android:textSize="30sp"
-            app:layout_constraintStart_toStartOf="parent"
-            app:layout_constraintTop_toTopOf="parent" />
-
-        <TextView
-            android:id="@+id/pvc_textView"
-            android:layout_width="wrap_content"
-            android:layout_height="wrap_content"
-            android:layout_marginTop="70dp"
-            android:text="PVC"
-            android:textColor="@color/blue"
-            android:textSize="30sp"
-            app:layout_constraintStart_toStartOf="@+id/record_switch"
-            app:layout_constraintTop_toTopOf="parent" />
-
-    </androidx.constraintlayout.widget.ConstraintLayout>
+            <TextView
+                android:id="@+id/pvc_textView"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="16dp"
+                android:layout_weight="1"
+                android:gravity="end"
+                android:text="PVC"
+                android:textColor="@color/blue"
+                android:textSize="28sp" />
+        </LinearLayout>
+    </LinearLayout>
 
     <com.androidplot.xy.XYPlot
         android:id="@+id/ecgplot"
         style="@style/FullScreenGraph.Minimalist"
-        android:layout_width="fill_parent"
+        android:layout_width="match_parent"
         android:layout_height="0dp"
-        android:layout_weight="1"
+        android:layout_marginTop="4dp"
+        android:layout_weight="1.2"
         app:graphBackgroundColor="@color/grayE"
-        app:gridBackgroundColor="@color/grayE"
         app:graphPaddingBottom="0dp"
         app:graphPaddingLeft="0dp"
-        app:graphPaddingTop="0dp"
         app:graphPaddingRight="0dp"
-        app:renderMode="use_background_thread"/>
+        app:graphPaddingTop="0dp"
+        app:gridBackgroundColor="@color/grayE"
+        app:renderMode="use_background_thread" />
 
     <com.androidplot.xy.XYPlot
         android:id="@+id/pvcplot"
         style="@style/APDefacto.Light"
-        app:rangeTitle="% PVC"
-        app:rangeTitleTextColor="@color/blue"
-        app:graphBackgroundColor="@color/white"
-        app:gridBackgroundColor="@color/grayE"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_marginTop="8dp"
+        android:layout_weight="1"
         app:backgroundColor="@color/white"
         app:domainOriginLineThickness="1dp"
-        app:rangeOriginLineThickness="1dp"
         app:domainTitleHeight="0dp"
+        app:graphBackgroundColor="@color/white"
         app:graphMarginBottom="5dp"
         app:graphMarginLeft="17dp"
-        app:graphMarginTop="15dp"
         app:graphMarginRight="0dp"
+        app:graphMarginTop="15dp"
+        app:gridBackgroundColor="@color/grayE"
         app:lineLabelAlignBottom="center"
-        app:lineLabelRotationBottom="0.0"
         app:lineLabelInsetBottom="2dp"
+        app:lineLabelRotationBottom="0.0"
+        app:rangeOriginLineThickness="1dp"
+        app:rangeTitle="% PVC"
+        app:rangeTitleTextColor="@color/blue"
         app:rangeTitleTextSize="20dp"
-        android:layout_width="fill_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
-        app:renderMode="use_background_thread"/>
+        app:renderMode="use_background_thread" />
 
     <com.androidplot.xy.XYPlot
         android:id="@+id/hrplot"
         style="@style/APDefacto.Light"
-        app:rangeTitle="HR (bpm)"
-        app:rangeTitleTextColor="@color/red"
-        app:graphBackgroundColor="@color/white"
-        app:gridBackgroundColor="@color/grayE"
+        android:layout_width="match_parent"
+        android:layout_height="0dp"
+        android:layout_marginTop="8dp"
+        android:layout_weight="1"
         app:backgroundColor="@color/white"
         app:domainOriginLineThickness="1dp"
-        app:rangeOriginLineThickness="1dp"
         app:domainTitleHeight="0dp"
+        app:graphBackgroundColor="@color/white"
         app:graphMarginBottom="5dp"
         app:graphMarginLeft="17dp"
-        app:graphMarginTop="15dp"
         app:graphMarginRight="0dp"
+        app:graphMarginTop="15dp"
+        app:gridBackgroundColor="@color/grayE"
         app:lineLabelAlignBottom="center"
-        app:lineLabelRotationBottom="0.0"
         app:lineLabelInsetBottom="2dp"
+        app:lineLabelRotationBottom="0.0"
+        app:rangeOriginLineThickness="1dp"
+        app:rangeTitle="HR (bpm)"
+        app:rangeTitleTextColor="@color/red"
         app:rangeTitleTextSize="20dp"
-        android:layout_width="fill_parent"
-        android:layout_height="0dp"
-        android:layout_weight="1"
-        app:renderMode="use_background_thread"/>
-
-    <TextView
-        android:id="@+id/bottom_padding"
-        android:layout_width="fill_parent"
-        android:layout_height="0dp"
-        android:layout_weight="0.2"
-        android:text=""/>
+        app:renderMode="use_background_thread" />
 
 </LinearLayout>

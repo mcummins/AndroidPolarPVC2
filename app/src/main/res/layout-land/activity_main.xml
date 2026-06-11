@@ -3,6 +3,7 @@
     xmlns:app="http://schemas.android.com/apk/res-auto"
     xmlns:tools="http://schemas.android.com/tools"
     tools:context=".MainActivity"
+    android:id="@+id/main"
     android:layout_width="match_parent"
     android:layout_height="match_parent"
     android:orientation="horizontal"
@@ -20,7 +21,7 @@
         android:orientation="vertical">
 
         <androidx.constraintlayout.widget.ConstraintLayout
-            android:id="@+id/main"
+            android:id="@+id/top_panel"
             android:layout_width="match_parent"
             android:layout_height="0dp"
             android:layout_weight="0.8">
@@ -74,6 +75,19 @@
                 app:layout_constraintTop_toBottomOf="@+id/device_textView" />
 
             <TextView
+                android:id="@+id/dropbox_textView"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="2sp"
+                android:clickable="true"
+                android:focusable="true"
+                android:text="@string/dropbox_link_text"
+                android:textColor="@color/blue"
+                android:textSize="12sp"
+                app:layout_constraintStart_toStartOf="@+id/battery_textView"
+                app:layout_constraintTop_toBottomOf="@+id/battery_textView" />
+
+            <TextView
                 android:id="@+id/hr_textView"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"
@@ -83,6 +97,18 @@
                 android:textColor="@color/red"
                 android:textSize="30sp"
                 app:layout_constraintStart_toStartOf="parent"
+                app:layout_constraintTop_toTopOf="parent" />
+
+            <TextView
+                android:id="@+id/pvc_total_textView"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginTop="75dp"
+                android:text=""
+                android:textColor="@color/blue"
+                android:textSize="20sp"
+                app:layout_constraintStart_toEndOf="@+id/hr_textView"
+                app:layout_constraintEnd_toStartOf="@+id/pvc_textView"
                 app:layout_constraintTop_toTopOf="parent" />
 
             <TextView

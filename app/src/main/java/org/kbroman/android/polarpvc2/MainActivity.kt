@@ -1,10 +1,17 @@
 package org.kbroman.android.polarpvc2
 
 import android.Manifest
+import android.content.ComponentName
+import android.content.Context
 import android.content.Intent
+import android.content.ServiceConnection
 import android.content.pm.PackageManager
+import android.net.Uri
 import android.os.Build
 import android.os.Bundle
+import android.os.IBinder
+import android.os.PowerManager
+import android.provider.Settings
 import android.util.Log
 import android.view.WindowManager
 import android.widget.Toast
@@ -12,62 +19,46 @@ import androidx.activity.enableEdgeToEdge
 import androidx.activity.result.ActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
+import androidx.core.content.ContextCompat
 import androidx.core.view.ViewCompat
 import androidx.core.view.WindowInsetsCompat
 import com.androidplot.xy.XYPlot
-import com.polar.sdk.api.PolarBleApi
-import com.polar.sdk.api.PolarBleApiCallback
-import com.polar.sdk.api.PolarBleApiDefaultImpl
-import com.polar.sdk.api.model.PolarDeviceInfo
-import com.polar.sdk.api.model.PolarEcgData
-import com.polar.sdk.api.model.PolarSensorSetting
-import io.reactivex.rxjava3.android.schedulers.AndroidSchedulers
-import io.reactivex.rxjava3.disposables.Disposable
 import org.kbroman.android.polarpvc2.databinding.ActivityMainBinding
-import java.util.Calendar
-import java.util.Date
-import java.util.TimeZone
-import java.util.UUID
 import kotlin.math.pow
 import kotlin.math.round
 
-
-private lateinit var binding: ActivityMainBinding
-
-class MainActivity : AppCompatActivity() {
-    private var deviceId: String = "D45EC729"
-    private var ecgDisposable: Disposable? = null
-    private var deviceConnected = false
-    private var bluetoothEnabled = false
-    private var isRecording = false
-    private var filePath: String? = ""
+class MainActivity : AppCompatActivity(), EcgListener {
+    private lateinit var binding: ActivityMainBinding
     private var ECGplot: XYPlot? = null
     private var HRplot: XYPlot? = null
     private var PVCplot: XYPlot? = null
+
+    var ecgPlotter: ECGplotter? = null
+    var hrPlotter: HRplotter? = null
+    var pvcPlotter: PVCplotter? = null
+
+    private var service: RecordingService? = null
+    private var bound = false
+    private var suppressSwitchCallbacks = false
+    private var pendingRecordStart = false
+    private var awaitingDropboxAuth = false
 
     companion object {
         private const val TAG = "PolarPVC2app_main"
         private const val PERMISSION_REQUEST_CODE = 1
     }
 
-    private val api: PolarBleApi by lazy {
-        // Notice all features are enabled
-        PolarBleApiDefaultImpl.defaultImplementation(
-            applicationContext,
-            setOf(
-                PolarBleApi.PolarBleSdkFeature.FEATURE_HR,
-                PolarBleApi.PolarBleSdkFeature.FEATURE_POLAR_ONLINE_STREAMING,
-                PolarBleApi.PolarBleSdkFeature.FEATURE_BATTERY_INFO,
-                PolarBleApi.PolarBleSdkFeature.FEATURE_POLAR_DEVICE_TIME_SETUP,
-                PolarBleApi.PolarBleSdkFeature.FEATURE_DEVICE_INFO)
-        )
-    }
+    private val serviceConnection = object : ServiceConnection {
+        override fun onServiceConnected(name: ComponentName?, binder: IBinder?) {
+            service = (binder as RecordingService.LocalBinder).getService()
+            service?.uiListener = this@MainActivity
+            service?.appForegrounded()
+        }
 
-    val pd: PeakDetection = PeakDetection(this)
-    val wd: WriteData = WriteData(this)
-    var ecgPlotter: ECGplotter? = null
-    var hrPlotter: HRplotter? = null
-    var pvcPlotter: PVCplotter? = null
+        override fun onServiceDisconnected(name: ComponentName?) {
+            service = null
+        }
+    }
 
     override fun onCreate(savedInstanceState: Bundle?) {
         super.onCreate(savedInstanceState)
@@ -82,159 +73,148 @@ class MainActivity : AppCompatActivity() {
             v.setPadding(systemBars.left, systemBars.top, systemBars.right, systemBars.bottom)
             insets
         }
-        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON)  // try to keep screen on
+        window.addFlags(WindowManager.LayoutParams.FLAG_KEEP_SCREEN_ON) // keep screen on while viewing
 
         ECGplot = findViewById(R.id.ecgplot)
         HRplot = findViewById(R.id.hrplot)
         PVCplot = findViewById(R.id.pvcplot)
 
-        api.setPolarFilter(false)
-        api.setApiCallback(object : PolarBleApiCallback() {
-            override fun blePowerStateChanged(powered: Boolean) {
-                Log.d(TAG, "BLE power: $powered")
-                bluetoothEnabled = powered
-                if (powered) {
-                    showToast("Phone Bluetooth on")
-                } else {
-                    showToast("Phone Bluetooth off")
-                }
-            }
-
-            override fun deviceConnected(polarDeviceInfo: PolarDeviceInfo) {
-                Log.d(TAG, "Connected: ${polarDeviceInfo.deviceId}")
-                deviceId = polarDeviceInfo.deviceId
-                deviceConnected = true
-                binding.connectSwitch.isChecked = true
-                binding.deviceTextView.text = deviceId
-
-            }
-
-            override fun deviceConnecting(polarDeviceInfo: PolarDeviceInfo) {
-                Log.d(TAG, "Connecting: ${polarDeviceInfo.deviceId}")
-            }
-
-            override fun deviceDisconnected(polarDeviceInfo: PolarDeviceInfo) {
-                Log.d(TAG, "Disconnected: ${polarDeviceInfo.deviceId}")
-                deviceConnected = false
-                binding.connectSwitch.isChecked = false
-                binding.deviceTextView.text = ""
-                binding.batteryTextView.text = ""
-            }
-
-            override fun disInformationReceived(identifier: String, uuid: UUID, value: String) {
-                Log.i(TAG, "Dis Info uuid: $uuid value: $value")
-            }
-
-            override fun batteryLevelReceived(identifier: String, level: Int) {
-                Log.d(TAG, "Battery Level: $level")
-                binding.batteryTextView.text = "Battery level $level"
-
-
-                // also set the local time on the device
-                val timeZone = TimeZone.getTimeZone("UTC")  // I'm not sure why I need "UTC" here
-                val calendar = Calendar.getInstance(timeZone)
-                calendar.time = Date()
-                api.setLocalTime(deviceId, calendar)
-                    .observeOn(AndroidSchedulers.mainThread())
-                    .subscribe(
-                        {
-                            val timeSetString = "time ${calendar.time} set to device"
-                            Log.d(TAG, timeSetString)
-                        },
-                        { error: Throwable -> Log.e(TAG, "set time failed: $error") }
-                    )
-            }
-
-            override fun bleSdkFeatureReady(identifier: String, feature: PolarBleApi.PolarBleSdkFeature) {
-                Log.d(TAG, "feature ready $feature")
-
-                when (feature) {
-                    PolarBleApi.PolarBleSdkFeature.FEATURE_POLAR_ONLINE_STREAMING -> {
-                        streamECG()
-                    }
-
-                    else -> {}
-                }
-            }
-
-        })
-
+        migrateOldPreferences()
 
         binding.connectSwitch.setOnCheckedChangeListener { _, isChecked ->
-            if (isChecked) { // open connection
+            if (suppressSwitchCallbacks) return@setOnCheckedChangeListener
+            if (isChecked) {
                 Log.d(TAG, "Opening connection")
-
                 binding.deviceTextView.text = "Connecting..."
                 binding.batteryTextView.text = "Battery level..."
-
-                api.connectToDevice(deviceId)
-
-            } else { // close connection
+                sendServiceAction(RecordingService.ACTION_CONNECT)
+            } else {
                 Log.d(TAG, "Closing connection")
-
-                if(binding.recordSwitch.isChecked) {
-                    Log.d(TAG, "currently recording")
-
-                    // FIX_ME: should open a dialog box to verify you want to stop recording
-                    // (maybe always verify stopping recording)
-
-                    binding.recordSwitch.isChecked=false  // this will call stop_recording()
-                }
-
-                ecgDisposable?.dispose()
-
-                api.disconnectFromDevice(deviceId)
-                pd.clear() // reset HR and RR running averages
+                sendServiceAction(RecordingService.ACTION_DISCONNECT)
                 binding.deviceTextView.text = ""
                 binding.batteryTextView.text = ""
             }
         }
 
         binding.recordSwitch.setOnCheckedChangeListener { _, isChecked ->
-            if (isChecked) { // start recording
+            if (suppressSwitchCallbacks) return@setOnCheckedChangeListener
+            if (isChecked) {
                 Log.d(TAG, "Starting recording")
 
-                if(!binding.connectSwitch.isChecked) {
-                    Log.d(TAG, "not yet connected")
-                    binding.connectSwitch.isChecked = true   // this will call open_connection()
+                if (!binding.connectSwitch.isChecked) {
+                    binding.connectSwitch.isChecked = true // triggers ACTION_CONNECT
                 }
-                isRecording = true
 
-                val prefs = getPreferences(MODE_PRIVATE)
-                filePath = prefs.getString("PREF_FILE_PATH", "")
-                if(filePath == "") chooseDataDirectory()
-            } else { // stop recording
-                Log.d(TAG, "Stopping recording")
-                isRecording = false
-                wd.closeFile()
-                wd.timeFileOpened = -1 // to ensure file is opened when needed
-            }
-        }
+                requestBatteryOptimizationExemption()
 
-        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
-            if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
-                requestPermissions(arrayOf(Manifest.permission.BLUETOOTH_SCAN, Manifest.permission.BLUETOOTH_CONNECT), PERMISSION_REQUEST_CODE)
+                val prefs = getSharedPreferences(RecordingService.PREFS_NAME, MODE_PRIVATE)
+                val filePath = prefs.getString(RecordingService.PREF_FILE_PATH, "") ?: ""
+                if (filePath == "") {
+                    // defer the actual start until a directory has been chosen
+                    pendingRecordStart = true
+                    chooseDataDirectory()
+                } else {
+                    sendServiceAction(RecordingService.ACTION_START_RECORDING)
+                }
             } else {
-                requestPermissions(arrayOf(Manifest.permission.ACCESS_FINE_LOCATION), PERMISSION_REQUEST_CODE)
+                Log.d(TAG, "Stopping recording")
+                pendingRecordStart = false
+                sendServiceAction(RecordingService.ACTION_STOP_RECORDING)
             }
-        } else {
-            requestPermissions(arrayOf(Manifest.permission.ACCESS_COARSE_LOCATION), PERMISSION_REQUEST_CODE)
         }
 
-        // request permissions to write files to SD card
-        requestPermissions(arrayOf(Manifest.permission.READ_EXTERNAL_STORAGE,
-            Manifest.permission.WRITE_EXTERNAL_STORAGE,
-            Manifest.permission.MANAGE_EXTERNAL_STORAGE), PERMISSION_REQUEST_CODE)
+        binding.dropboxTextView.setOnClickListener {
+            when {
+                !DropboxSync.isConfigured() ->
+                    showToast("No Dropbox app key; set dropbox.app.key in local.properties and rebuild")
+                !DropboxSync.isLinked(this) -> {
+                    awaitingDropboxAuth = true
+                    DropboxSync.startAuth(this)
+                }
+                else -> {
+                    showToast("Dropbox linked; uploading pending files")
+                    UploadWorker.enqueueNow(this)
+                }
+            }
+        }
+        updateDropboxLabel()
+
+        requestNeededPermissions()
     }
 
+    private fun updateDropboxLabel() {
+        binding.dropboxTextView.text = if (DropboxSync.isLinked(this))
+            getString(R.string.dropbox_linked_text) else getString(R.string.dropbox_link_text)
+    }
+
+    private fun requestNeededPermissions() {
+        val perms = mutableListOf<String>()
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S) {
+            perms.add(Manifest.permission.BLUETOOTH_SCAN)
+            perms.add(Manifest.permission.BLUETOOTH_CONNECT)
+        } else if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.Q) {
+            perms.add(Manifest.permission.ACCESS_FINE_LOCATION)
+        } else {
+            perms.add(Manifest.permission.ACCESS_COARSE_LOCATION)
+        }
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.TIRAMISU) {
+            perms.add(Manifest.permission.POST_NOTIFICATIONS)
+        }
+        requestPermissions(perms.toTypedArray(), PERMISSION_REQUEST_CODE)
+    }
+
+    // recording for weeks requires exemption from battery optimization,
+    // otherwise Doze will eventually kill the BLE connection
+    private fun requestBatteryOptimizationExemption() {
+        val pm = getSystemService(Context.POWER_SERVICE) as PowerManager
+        if (!pm.isIgnoringBatteryOptimizations(packageName)) {
+            try {
+                val intent = Intent(
+                    Settings.ACTION_REQUEST_IGNORE_BATTERY_OPTIMIZATIONS,
+                    Uri.parse("package:$packageName")
+                )
+                startActivity(intent)
+            } catch (ex: Exception) {
+                Log.e(TAG, "Battery optimization exemption request failed: $ex")
+            }
+        }
+    }
+
+    // file path used to be stored in activity-private prefs; move it to
+    // shared prefs so the service can read it
+    private fun migrateOldPreferences() {
+        val newPrefs = getSharedPreferences(RecordingService.PREFS_NAME, MODE_PRIVATE)
+        if (newPrefs.getString(RecordingService.PREF_FILE_PATH, "") == "") {
+            val oldPath = getPreferences(MODE_PRIVATE).getString("PREF_FILE_PATH", "") ?: ""
+            if (oldPath != "") {
+                newPrefs.edit().putString(RecordingService.PREF_FILE_PATH, oldPath).apply()
+                Log.d(TAG, "Migrated file path pref")
+            }
+        }
+    }
+
+    private fun sendServiceAction(action: String) {
+        // a connectedDevice foreground service may not start without
+        // BLUETOOTH_CONNECT on API 31+; avoid crashing the service
+        if (Build.VERSION.SDK_INT >= Build.VERSION_CODES.S &&
+            checkSelfPermission(Manifest.permission.BLUETOOTH_CONNECT) != PackageManager.PERMISSION_GRANTED
+        ) {
+            showToast("Bluetooth permission needed first")
+            requestNeededPermissions()
+            return
+        }
+        val intent = Intent(this, RecordingService::class.java)
+        intent.action = action
+        ContextCompat.startForegroundService(this, intent)
+    }
 
     override fun onRequestPermissionsResult(requestCode: Int, permissions: Array<String>, grantResults: IntArray) {
         super.onRequestPermissionsResult(requestCode, permissions, grantResults)
         if (requestCode == PERMISSION_REQUEST_CODE) {
             for (index in 0..grantResults.lastIndex) {
                 if (grantResults[index] == PackageManager.PERMISSION_DENIED) {
-                    Log.w(TAG, "No sufficient permissions")
-                    showToast("No sufficient permissions")
+                    Log.w(TAG, "Permission denied: ${permissions[index]}")
+                    showToast("Missing permission: ${permissions[index]}")
                     return
                 }
             }
@@ -242,13 +222,40 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    public override fun onPause() {
-        super.onPause()
+    override fun onStart() {
+        super.onStart()
+        bindService(
+            Intent(this, RecordingService::class.java),
+            serviceConnection, Context.BIND_AUTO_CREATE
+        )
+        bound = true
+    }
+
+    override fun onStop() {
+        super.onStop()
+        service?.uiListener = null
+        if (bound) {
+            unbindService(serviceConnection)
+            bound = false
+        }
+        // NOTE: the service keeps recording in the background
     }
 
     public override fun onResume() {
         super.onResume()
-        if(api != null) api.foregroundEntered()
+        service?.appForegrounded()
+
+        // complete a pending Dropbox auth; checked whenever unlinked (not
+        // just when awaiting) because the activity may have been recreated
+        // during the browser round-trip
+        if (!DropboxSync.isLinked(this) && DropboxSync.finishAuth(this)) {
+            showToast("Dropbox linked")
+            UploadWorker.enqueueNow(this)
+            updateDropboxLabel()
+        } else if (awaitingDropboxAuth) {
+            showToast("Dropbox linking not completed")
+        }
+        awaitingDropboxAuth = false
 
         if (ecgPlotter == null) {
             ECGplot!!.post({
@@ -264,111 +271,132 @@ class MainActivity : AppCompatActivity() {
         }
     }
 
-    public override fun onDestroy() {
-        super.onDestroy()
-        api.shutDown()
-        wd.closeFile()
-        binding.connectSwitch.isChecked = false
-        binding.recordSwitch.isChecked = false
-        pd.clear()  // clear HR and RR running average data
-    }
-
     private fun showToast(message: String) {
         val toast = Toast.makeText(applicationContext, message, Toast.LENGTH_LONG)
         toast.show()
     }
 
-    // this and the next are for selecting output directory
+    // ---------- EcgListener (called by the service on the main thread) ----------
+
+    override fun onEcgSample(timeSec: Double, voltage: Double) {
+        ecgPlotter?.addValues(timeSec, voltage)
+    }
+
+    override fun onEcgBatchDone() {
+        ecgPlotter?.updatePlot = true
+        ecgPlotter?.update()
+    }
+
+    override fun onPeak(timeSec: Double, voltage: Double) {
+        ecgPlotter?.addPeakValue(timeSec, voltage)
+    }
+
+    override fun onPeakReplaced(timeSec: Double, voltage: Double) {
+        ecgPlotter?.replaceLastPeakValue(timeSec, voltage)
+    }
+
+    override fun onPvc(timeSec: Double, voltage: Double) {
+        ecgPlotter?.addPVCValue(timeSec, voltage)
+    }
+
+    override fun onStats(
+        hrBpm: Double,
+        pvcAvePct: Double,
+        pvcTotalPct: Double?,
+        rrLastTimeSec: Double,
+        pvcLastTimeSec: Double,
+        enoughForPlot: Boolean
+    ) {
+        binding.pvcTextView.text = "${Math.round(pvcAvePct)}% pvc"
+        if (pvcTotalPct != null) {
+            binding.pvcTotalTextView.text = "(${Math.round(pvcTotalPct)}% total)"
+        }
+        binding.hrTextView.text = "${Math.round(hrBpm)} bpm"
+
+        if (enoughForPlot) {
+            hrPlotter?.addValues(rrLastTimeSec, hrBpm)
+            pvcPlotter?.addValues(pvcLastTimeSec, pvcAvePct)
+        }
+    }
+
+    override fun onConnectionChanged(connected: Boolean, deviceId: String) {
+        suppressSwitchCallbacks = true
+        binding.connectSwitch.isChecked = connected || (service?.shouldBeConnected ?: false)
+        suppressSwitchCallbacks = false
+
+        binding.deviceTextView.text = when {
+            connected -> deviceId
+            service?.shouldBeConnected == true -> "Reconnecting..."
+            else -> ""
+        }
+        if (!connected) binding.batteryTextView.text = ""
+    }
+
+    override fun onBatteryLevel(level: Int) {
+        binding.batteryTextView.text = "Battery level $level"
+    }
+
+    override fun onRecordingChanged(recording: Boolean) {
+        suppressSwitchCallbacks = true
+        binding.recordSwitch.isChecked = recording
+        suppressSwitchCallbacks = false
+    }
+
+    // ---------- output directory selection ----------
+
     private val openDirectoryLauncher = registerForActivityResult<Intent, ActivityResult>(
         ActivityResultContracts.StartActivityForResult()
     ) { result: ActivityResult ->
-
-         try {
+        var savedPath = false
+        try {
             if (result.resultCode == RESULT_OK) {
                 // Get Uri from Storage Access Framework.
-                var uri = result.data!!.data
+                val uri = result.data!!.data
                 Log.d(TAG, "got a filePath: $uri")
 
-                // save to preferences
-                val editor = getPreferences(MODE_PRIVATE).edit()
+                val editor = getSharedPreferences(RecordingService.PREFS_NAME, MODE_PRIVATE).edit()
                 if (uri == null) {
-                    editor.putString("PREF_FILE_PATH", null)
+                    editor.putString(RecordingService.PREF_FILE_PATH, null)
                     editor.apply()
                 }
                 try {
-                    this.getContentResolver().takePersistableUriPermission(
+                    this.contentResolver.takePersistableUriPermission(
                         uri!!,
-                        Intent.FLAG_GRANT_READ_URI_PERMISSION +
-                    Intent.FLAG_GRANT_WRITE_URI_PERMISSION)
-                    editor.putString("PREF_FILE_PATH", uri.toString())
+                        Intent.FLAG_GRANT_READ_URI_PERMISSION or
+                                Intent.FLAG_GRANT_WRITE_URI_PERMISSION
+                    )
+                    editor.putString(RecordingService.PREF_FILE_PATH, uri.toString())
                     editor.apply()
+                    savedPath = true
                 } catch (ex: Exception) {
-                    Log.d(TAG,"Failed to save persistent uri permission")
+                    Log.d(TAG, "Failed to save persistent uri permission")
                 }
             }
         } catch (ex: Exception) {
             Log.e(TAG, "Error in openDirectory")
+        }
+
+        if (pendingRecordStart) {
+            pendingRecordStart = false
+            if (savedPath) {
+                sendServiceAction(RecordingService.ACTION_START_RECORDING)
+            } else {
+                // picker cancelled/failed: don't pretend to record
+                showToast("No folder chosen; recording not started")
+                suppressSwitchCallbacks = true
+                binding.recordSwitch.isChecked = false
+                suppressSwitchCallbacks = false
+            }
         }
     }
 
     private fun chooseDataDirectory() {
         val intent = Intent(Intent.ACTION_OPEN_DOCUMENT_TREE)
         intent.addFlags(
-            Intent.FLAG_GRANT_READ_URI_PERMISSION and
+            Intent.FLAG_GRANT_READ_URI_PERMISSION or
                     Intent.FLAG_GRANT_WRITE_URI_PERMISSION
         )
         openDirectoryLauncher.launch(intent)
-    }
-
-    fun streamECG() {
-        val isDisposed = ecgDisposable?.isDisposed ?: true
-        if (isDisposed) {
-            ecgDisposable = api.requestStreamSettings(deviceId, PolarBleApi.PolarDeviceDataType.ECG)
-                .toFlowable()
-                .flatMap { sensorSetting: PolarSensorSetting -> api.startEcgStreaming(deviceId, sensorSetting.maxSettings()) }
-                .observeOn(AndroidSchedulers.mainThread())
-                .subscribe(
-                    { polarEcgData: PolarEcgData ->
-                        Log.d(TAG, "ecg update")
-
-                        pd.processData(polarEcgData)  // PeakDetection -> find_peaks
-                        if(isRecording && filePath != "") {
-                            Log.d(TAG, "writing data")
-                            wd.writeData(filePath!!, polarEcgData)
-                        }
-
-                        if(pd.rrData.size() > 1) {
-                            val hr_bpm: Double = 60.0 / pd.rrData.average()
-                            val pvc_ave: Double = pd.pvcData.average() * 100.0
-                            Log.d(TAG, "pvc = ${myround(pvc_ave, 0)}   hr=${myround(hr_bpm, 1)}")
-                            binding.pvcTextView.text = "${Math.round(pvc_ave)}% pvc"
-                            binding.hrTextView.text = "${Math.round(hr_bpm)} bpm"
-
-
-                            if (pd.rrData.size() > 10) {
-                                // add to hr and pvc plots
-                                hrPlotter!!.addValues(pd.rrData.lastTime, hr_bpm)
-                                pvcPlotter!!.addValues(pd.pvcData.lastTime, pvc_ave)
-                            }
-                        }
-                    },
-                    { error: Throwable ->
-                        Log.e(TAG, "Ecg stream failed $error")
-                        ecgDisposable = null
-
-                        // disconnected so turn switches off
-                        binding.connectSwitch.isChecked = false
-                        binding.recordSwitch.isChecked = false
-                    },
-                    {
-                        Log.d(TAG, "Ecg stream complete")
-                    }
-                )
-        } else {
-            // NOTE stops streaming if it is "running"
-            ecgDisposable?.dispose()
-            ecgDisposable = null
-        }
     }
 }
 

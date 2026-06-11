@@ -1,0 +1,80 @@
+package org.kbroman.android.polarpvc2
+
+import android.content.Context
+import android.net.Uri
+import android.os.ParcelFileDescriptor
+import android.provider.DocumentsContract
+import android.util.Log
+import java.io.FileWriter
+import java.io.PrintWriter
+import java.time.Instant
+
+/**
+ * Append-only CSV log of session events (connect, disconnect, reconnect
+ * attempts, stream errors, file errors). This is what makes coverage
+ * accounting possible offline: gaps in the ECG record can be attributed
+ * to disconnections rather than silently shrinking the denominator.
+ *
+ * One file per service start, in the same SAF tree as the ECG data.
+ */
+class EventLog(private val context: Context) {
+    private var filePointer: ParcelFileDescriptor? = null
+    private var writer: PrintWriter? = null
+
+    companion object {
+        private const val TAG = "PolarPVC2app_events"
+    }
+
+    fun open(treeUriString: String) {
+        if (writer != null || treeUriString == "") return
+        try {
+            val fileName = "events_${WriteData.FILE_TIME_FORMATTER.format(Instant.now())}Z.csv"
+
+            val dirUri = Uri.parse(treeUriString)
+            val documentId = DocumentsContract.getTreeDocumentId(dirUri)
+            val docTreeUri = DocumentsContract.buildDocumentUriUsingTree(dirUri, documentId)
+            val resolver = context.contentResolver
+            val docUri = DocumentsContract.createDocument(resolver, docTreeUri, "text/csv", fileName)
+            filePointer = resolver.openFileDescriptor(docUri!!, "w")
+            writer = PrintWriter(FileWriter(filePointer!!.fileDescriptor))
+            writer?.write("time,event,detail\n")
+            writer?.flush()
+            // record the open file so UploadWorker won't upload it half-written
+            context.getSharedPreferences(RecordingService.PREFS_NAME, Context.MODE_PRIVATE)
+                .edit().putString(RecordingService.PREF_OPEN_EVENTS_FILE, fileName).apply()
+            Log.d(TAG, "opened event log $docUri")
+        } catch (ex: Exception) {
+            Log.e(TAG, "Failed to open event log: $ex")
+            writer = null
+            filePointer = null
+        }
+    }
+
+    fun log(event: String, detail: String = "") {
+        Log.d(TAG, "$event $detail")
+        try {
+            // detail is free text (often exception messages): quote it so
+            // embedded commas/quotes/newlines can't break the CSV
+            val quoted = "\"" + detail.replace("\"", "\"\"").replace('\n', ' ') + "\""
+            writer?.write("${Instant.now()},${event},${quoted}\n")
+            writer?.flush()
+        } catch (ex: Exception) {
+            Log.e(TAG, "Failed to write event: $ex")
+        }
+    }
+
+    fun close() {
+        try {
+            writer?.flush()
+            writer?.close()
+            filePointer?.close()
+        } catch (ex: Exception) {
+            Log.e(TAG, "Error closing event log: $ex")
+        } finally {
+            writer = null
+            filePointer = null
+            context.getSharedPreferences(RecordingService.PREFS_NAME, Context.MODE_PRIVATE)
+                .edit().remove(RecordingService.PREF_OPEN_EVENTS_FILE).apply()
+        }
+    }
+}

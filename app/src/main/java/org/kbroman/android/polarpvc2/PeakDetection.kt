@@ -7,7 +7,7 @@ import kotlin.math.min
 import kotlin.math.pow
 import kotlin.math.round
 
-class PeakDetection(var mActivity: MainActivity) {
+class PeakDetection(var listener: EcgListener? = null) {
 
     companion object {
         private const val TAG = "PolarPVC2app_peaks"
@@ -15,8 +15,6 @@ class PeakDetection(var mActivity: MainActivity) {
         private const val N_PEAKS: Int = 150*5
         private const val N_PEAKS_FOR_RR_AVE = 25
         private const val N_PEAKS_FOR_PVC_AVE = 100
-        private const val PVC_RS_DIST: Double = 5.0
-        private const val PVC_TEST_STAT_THRESH: Double = 0.78
         private const val INITIAL_PEAKS_TO_SKIP = 4
         private const val INITIAL_ECG_TO_SKIP = 500
         private const val MIN_PEAK_VALUE: Double = 1.5
@@ -31,6 +29,9 @@ class PeakDetection(var mActivity: MainActivity) {
     var ecgData: ECGdata = ECGdata(N_ECG_VALS)
     var pvcData: RunningAverage = RunningAverage(N_PEAKS_FOR_PVC_AVE)
     var rrData: RunningAverage = RunningAverage(N_PEAKS_FOR_RR_AVE)
+    var amplitudeData: RunningAverage = RunningAverage(N_PEAKS_FOR_RR_AVE)
+    var totalBeats: Int = 0
+    var totalPVCs: Int = 0
     private var peakIndexes = FixedSizedList<Int>(N_PEAKS)
     private var movingAveSDsmsqdiff = RunningAveSD(MOVING_AVESD_WINDOW)
     private var last_smsqdiff: Double = -Double.MAX_VALUE
@@ -48,10 +49,9 @@ class PeakDetection(var mActivity: MainActivity) {
             val timestamp = data.timeStamp + TIMESTAMP_OFFSET
 
             ecgData.add(timestamp, voltage)
-            mActivity.ecgPlotter!!.addValues(timestamp/1e9, voltage)
+            listener?.onEcgSample(timestamp/1e9, voltage)
         }
-        mActivity.ecgPlotter!!.updatePlot = true
-        mActivity.ecgPlotter!!.update()
+        listener?.onEcgBatchDone()
         val n = ecgData.maxIndex() - start
 
         if (ecgData.maxIndex() < INITIAL_ECG_TO_SKIP) return  // wait to start looking for peaks
@@ -96,13 +96,13 @@ class PeakDetection(var mActivity: MainActivity) {
                 last_smsqdiff = this_smsqdiff
                 lastPeakIndex = thisPeakIndex
                 peakIndexes.add(thisPeakIndex)
-                mActivity.ecgPlotter!!.addPeakValue(ecgData.time.get(thisPeakIndex)/1e9, ecgData.volt.get(thisPeakIndex))
+                listener?.onPeak(ecgData.time.get(thisPeakIndex)/1e9, ecgData.volt.get(thisPeakIndex))
             } else { // too close to previous peak
                 if (this_smsqdiff > last_smsqdiff) {
                     last_smsqdiff = this_smsqdiff
                     lastPeakIndex = thisPeakIndex
                     peakIndexes.setLast(thisPeakIndex)
-                    mActivity.ecgPlotter!!.replaceLastPeakValue(ecgData.time.get(thisPeakIndex)/1e9, ecgData.volt.get(thisPeakIndex))
+                    listener?.onPeakReplaced(ecgData.time.get(thisPeakIndex)/1e9, ecgData.volt.get(thisPeakIndex))
                     Log.d(TAG,"adjusted peak")
                 }
             }
@@ -120,32 +120,94 @@ class PeakDetection(var mActivity: MainActivity) {
                 min((thisPeakIndex - lastPeakIndex).toDouble() / 2.0, 20.0).toInt()
 
             for (i in 1 until endSearch) temp_ecg.add(ecgData.volt.get(lastPeakIndex + i))
-            val minPeakIndex = which_min(temp_ecg)  // compare to PVC_RS_DIST
-            val pvcTestStat = calcPVCTestStat(temp_ecg) // compare to PVC_TEST_STAT_THRESH
-            Log.d(TAG, "minPeakIndex: $minPeakIndex   pvcTestStat: ${myround(pvcTestStat, 4)}")
+            val minPeakIndex = which_min(temp_ecg)
+            val pvcTestStat = PVCClassifier.calcTestStat(temp_ecg)
+            val rrBefore = (ecgData.time.get(lastPeakIndex) - ecgData.time.get(prevPeakIndex) )/1e9
+            val rrAfter = (ecgData.time.get(thisPeakIndex) - ecgData.time.get(lastPeakIndex) )/1e9
+            val baselineRr = rrData.average().takeIf { rrData.size() >= 5 }
 
-            if (pvcTestStat > PVC_TEST_STAT_THRESH) { // looks like a PVC
+            // Measure QRS width at half-height around R peak
+            val qrsWidth = measureQrsWidth(lastPeakIndex)
+
+            // Compare peak amplitude to baseline of normal beats
+            val peakAmplitude = ecgData.volt.get(lastPeakIndex)
+            val amplitudeRatio = if (amplitudeData.size() >= 5)
+                peakAmplitude / amplitudeData.average() else null
+
+            val looksLikePVC = PVCClassifier.looksLikePVC(
+                minPeakIndex = minPeakIndex,
+                pvcTestStat = pvcTestStat,
+                rrBeforeSec = rrBefore,
+                rrAfterSec = rrAfter,
+                baselineRrSec = baselineRr,
+                qrsWidth = qrsWidth,
+                amplitudeRatio = amplitudeRatio
+            )
+            Log.d(
+                TAG,
+                "minPeakIndex: $minPeakIndex   pvcTestStat: ${myround(pvcTestStat, 4)}   rrBefore: ${myround(rrBefore, 3)}   rrAfter: ${myround(rrAfter, 3)}   rrBaseline: ${baselineRr?.let { myround(it, 3) } ?: "n/a"}   qrsWidth: $qrsWidth   ampRatio: ${amplitudeRatio?.let { myround(it, 3) } ?: "n/a"}   looksLikePVC: $looksLikePVC"
+            )
+
+            totalBeats++
+            if (looksLikePVC) {
+                totalPVCs++
                 pvcData.add(1.0)
                 pvcData.lastTime = ecgData.time.get(lastPeakIndex)/1e9
                 Log.wtf(TAG, "*** PVC ***")
-                mActivity.ecgPlotter!!.addPVCValue(ecgData.time.get(lastPeakIndex)/1e9, ecgData.volt.get(lastPeakIndex))
+                listener?.onPvc(ecgData.time.get(lastPeakIndex)/1e9, ecgData.volt.get(lastPeakIndex))
             } else {                          // not a PVC
                 pvcData.add(0.0)
                 pvcData.lastTime = ecgData.time.get(lastPeakIndex)/1e9
                 Log.d(TAG, "not PVC")
+
+                // Only add normal beat amplitude to baseline
+                amplitudeData.add(peakAmplitude)
             }
 
-            // get RR distance based on timestamps, in seconds
-            val rr: Double = (ecgData.time.get(lastPeakIndex) - ecgData.time.get(prevPeakIndex) )/1e9
-            if(rr < MAX_RR_SEC) {
+            // Only add RR to baseline for non-PVC beats
+            val rr: Double = rrBefore
+            if(!looksLikePVC && rr < MAX_RR_SEC) {
                 rrData.add(rr)
                 rrData.lastTime = ecgData.time.get(lastPeakIndex) / 1e9
-            } else {
+            } else if(rr >= MAX_RR_SEC) {
                 Log.d(TAG, "Ignoring RR = ${myround(rr, 2)} sec")
             }
         }
     }
 
+
+    fun measureQrsWidth(peakIndex: Int): Int {
+        // Estimate baseline from samples 25-35 before the R peak
+        val baselineStart = max(0, peakIndex - 35)
+        val baselineEnd = max(0, peakIndex - 25)
+        if (baselineEnd <= baselineStart) return 0
+
+        var baselineSum = 0.0
+        for (i in baselineStart until baselineEnd) {
+            baselineSum += ecgData.volt.get(i)
+        }
+        val baseline = baselineSum / (baselineEnd - baselineStart)
+
+        val peakVolt = ecgData.volt.get(peakIndex)
+        val halfHeight = (peakVolt + baseline) / 2.0
+
+        // Walk backwards from peak until voltage drops below half-height
+        var leftWidth = 0
+        for (i in peakIndex downTo max(0, peakIndex - 20)) {
+            if (ecgData.volt.get(i) >= halfHeight) leftWidth++
+            else break
+        }
+
+        // Walk forwards from peak
+        var rightWidth = 0
+        val maxForward = min(ecgData.maxIndex() - 1, peakIndex + 20)
+        for (i in (peakIndex + 1)..maxForward) {
+            if (ecgData.volt.get(i) >= halfHeight) rightWidth++
+            else break
+        }
+
+        return leftWidth + rightWidth
+    }
 
     fun adjustPeak (peak: Int): Int {
         var ecg = ArrayList<Double>()
@@ -201,36 +263,15 @@ class PeakDetection(var mActivity: MainActivity) {
         return (min_index)
     }
 
-    // test statistic for determining PVC
-    //    as proportion of values (from peak to half-way to next peak) that are below
-    //    the mid-point of the range of those values
-    private fun calcPVCTestStat(v: ArrayList<Double>): Double {
-        var n = v.size
-        var count: Int = 0
-
-        if(n==0) return(0.0)
-
-        var min = v[0]
-        var max = v[0]
-
-        for(vv in v) {
-            if(vv < min) min = vv
-            if(vv > max) max = vv
-        }
-
-        var mid_range = (max + min)/2.0
-
-
-        for (vv in v) {
-            if(vv < mid_range) count++
-        }
-        return count.toDouble() / n.toDouble()
-    }
-
     fun clear() {
         pvcData.clear()
         rrData.clear()
+        amplitudeData.clear()
         peakIndexes.clear()
+        movingAveSDsmsqdiff = RunningAveSD(MOVING_AVESD_WINDOW)
+        last_smsqdiff = -Double.MAX_VALUE
+        totalBeats = 0
+        totalPVCs = 0
         lastPeakIndex = -1
         thisPeakIndex = -1
     }
