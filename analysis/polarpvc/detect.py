@@ -12,7 +12,8 @@ dropout gap would be meaningless.
 from __future__ import annotations
 
 import numpy as np
-from scipy.signal import butter, filtfilt
+from scipy.ndimage import median_filter
+from scipy.signal import butter, filtfilt, find_peaks
 
 from .io import EcgRecord, Segment
 
@@ -20,8 +21,15 @@ from .io import EcgRecord, Segment
 _REFRACTORY_S = 0.20
 # QRS integration window
 _INTEGRATION_S = 0.15
-# search-back: if no beat for this multiple of the recent RR, lower threshold
-_SEARCHBACK_RR_FACTOR = 1.66
+# sliding-threshold window: local energy stats are computed over this span so
+# the threshold tracks slow amplitude drift (electrode contact, posture) yet a
+# single motion artifact cannot raise it for more than a beat or two
+_THRESHOLD_WINDOW_S = 2.5
+# a candidate must exceed local median energy by this many local MADs
+_THRESHOLD_MAD_K = 8.0
+# floor the threshold at this fraction of a robust QRS-energy level so quiet
+# stretches with no beats do not detect their own noise as beats
+_THRESHOLD_FLOOR_FRAC = 0.10
 
 
 def _bandpass(sig: np.ndarray, fs: float, lo: float, hi: float) -> np.ndarray:
@@ -52,84 +60,34 @@ def _detect_in_array(
     energy = _integrated_energy(mv, fs)
     refractory = max(1, int(round(_REFRACTORY_S * fs)))
 
-    # adaptive thresholds (Pan–Tompkins): running signal and noise levels
-    spki = 0.0  # running estimate of signal peak
-    npki = 0.0  # running estimate of noise peak
-    # seed from the first couple of seconds
-    seed = energy[: int(2 * fs)] if n >= int(2 * fs) else energy
-    spki = float(np.max(seed)) * 0.25 if seed.size else 0.0
-    npki = float(np.mean(seed)) if seed.size else 0.0
-
-    # candidate local maxima in the energy signal
-    peaks = _local_maxima(energy, refractory)
-
-    rr_recent: list[int] = []
-    qrs_peaks: list[int] = []
-    last_qrs = -refractory
-    last_energy_peak = None
-
-    def threshold() -> float:
-        return npki + 0.25 * (spki - npki)
-
-    for p in peaks:
-        val = energy[p]
-        if val >= threshold() and (p - last_qrs) >= refractory:
-            qrs_peaks.append(p)
-            spki = 0.125 * val + 0.875 * spki
-            if last_qrs >= 0:
-                rr = p - last_qrs
-                rr_recent.append(rr)
-                if len(rr_recent) > 8:
-                    rr_recent.pop(0)
-            last_qrs = p
-        else:
-            npki = 0.125 * val + 0.875 * npki
-        last_energy_peak = p
-
-    # search-back: recover beats missed during threshold transients
-    qrs_peaks = _search_back(energy, qrs_peaks, refractory, threshold(), fs)
+    # Per-sample adaptive threshold from local robust statistics. The earlier
+    # Pan–Tompkins running EWMA had a failure mode on real data: a single large
+    # motion artifact (seen ~7900x median energy in field recordings) pushes the
+    # running signal estimate so high that the threshold never recovers and all
+    # subsequent beats are missed. A windowed median/MAD threshold is immune —
+    # the median ignores the artifact, so detection resumes within a beat.
+    thr = _adaptive_threshold(energy, fs)
+    qrs_peaks, _ = find_peaks(energy, height=thr, distance=refractory)
 
     # refine each detection to the local extremum of the band-limited signal,
     # taking whichever polarity has the larger absolute deflection (PVCs are
     # frequently inverted in a single lead)
-    return _refine(mv, fs, np.array(sorted(set(qrs_peaks)), dtype=int), refine_window_s)
+    return _refine(mv, fs, np.array(sorted(set(qrs_peaks.tolist())), dtype=int), refine_window_s)
 
 
-def _local_maxima(x: np.ndarray, min_dist: int) -> np.ndarray:
-    """Indices of local maxima at least min_dist apart (greedy by height)."""
-    # candidate maxima
-    greater = (x[1:-1] >= x[:-2]) & (x[1:-1] > x[2:])
-    cand = np.flatnonzero(greater) + 1
-    if cand.size == 0:
-        return cand
-    # enforce spacing, keeping the taller peak
-    order = cand[np.argsort(x[cand])[::-1]]
-    chosen = []
-    taken = np.zeros(x.size, dtype=bool)
-    for c in order:
-        lo = max(0, c - min_dist)
-        hi = min(x.size, c + min_dist + 1)
-        if not taken[lo:hi].any():
-            chosen.append(c)
-            taken[c] = True
-    return np.array(sorted(chosen), dtype=int)
-
-
-def _search_back(energy, qrs_peaks, refractory, thr, fs):
-    if len(qrs_peaks) < 2:
-        return qrs_peaks
-    recovered = list(qrs_peaks)
-    rrs = np.diff(qrs_peaks)
-    rr_mean = float(np.median(rrs))
-    half_thr = thr * 0.5
-    for a, b in zip(qrs_peaks[:-1], qrs_peaks[1:]):
-        if (b - a) > _SEARCHBACK_RR_FACTOR * rr_mean:
-            window = energy[a + refractory : b - refractory]
-            if window.size:
-                local = np.argmax(window) + a + refractory
-                if energy[local] >= half_thr:
-                    recovered.append(int(local))
-    return sorted(set(recovered))
+def _adaptive_threshold(energy: np.ndarray, fs: float) -> np.ndarray:
+    """Per-sample detection threshold: local median + K·MAD of the energy,
+    floored at a fraction of a robust QRS-energy level."""
+    win = int(round(_THRESHOLD_WINDOW_S * fs)) | 1  # odd window
+    win = min(win, energy.size if energy.size % 2 else energy.size - 1)
+    win = max(win, 1)
+    med = median_filter(energy, size=win, mode="nearest")
+    mad = median_filter(np.abs(energy - med), size=win, mode="nearest")
+    thr = med + _THRESHOLD_MAD_K * mad
+    # QRS complexes occupy a small fraction of the record, so a high energy
+    # percentile is a robust stand-in for "typical beat energy".
+    floor = _THRESHOLD_FLOOR_FRAC * float(np.percentile(energy, 98))
+    return np.maximum(thr, floor)
 
 
 def _refine(mv, fs, peaks, window_s):

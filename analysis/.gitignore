@@ -3,3 +3,6 @@ __pycache__/
 *.pyc
 .pytest_cache/
 background_reading/
+
+# manually pulled recordings for offline analysis (large, local only)
+data/

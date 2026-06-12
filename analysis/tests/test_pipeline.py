@@ -38,6 +38,32 @@ class TestDetection(unittest.TestCase):
         self.assertGreaterEqual(m.sensitivity, 0.98)
         self.assertGreaterEqual(m.precision, 0.98)
 
+    def test_motion_artifact_does_not_kill_detection(self):
+        # A large motion-artifact spike (~13 mV, as seen in a real field
+        # recording) must not poison the adaptive threshold and suppress
+        # detection for the rest of the record. Regression for the global-EWMA
+        # threshold that left only the first ~12 min of a 43-min recording
+        # detected.
+        rec, ecg = _mock_record(duration_s=300, mean_hr=70, pvc_burden=0.1, seed=5)
+        i = int(100 * ecg.fs)
+        ecg.mv[i : i + 20] += np.hanning(20) * 13.0
+        ecg.segments = split_segments(ecg.t, ecg.mv, ecg.fs)
+        result = label_record(ecg)
+        m = score_detection(rec.beat_times, ecg.t[result.beats])
+        self.assertGreaterEqual(m.sensitivity, 0.98)
+        # detection must continue well past the artifact, not stop at it
+        last_beat_s = ecg.t[result.beats[-1]] - ecg.t[0]
+        self.assertGreater(last_beat_s, 290.0)
+
+    def test_artifact_not_labelled_pvc(self):
+        # the artifact deflection itself must not be counted as a PVC
+        rec, ecg = _mock_record(duration_s=120, mean_hr=70, pvc_burden=0.0, seed=11)
+        i = int(60 * ecg.fs)
+        ecg.mv[i : i + 20] += np.hanning(20) * 13.0
+        ecg.segments = split_segments(ecg.t, ecg.mv, ecg.fs)
+        result = label_record(ecg)
+        self.assertEqual(sum(1 for l in result.labels if l.is_pvc), 0)
+
 
 class TestPvcClassification(unittest.TestCase):
     def test_clean_signal_perfect(self):

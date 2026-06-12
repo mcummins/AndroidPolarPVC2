@@ -36,6 +36,11 @@ class ClassifierConfig:
     # accepted even if timing is ambiguous (e.g. interpolated PVC)
     strong_width_ms: float = 140.0
     strong_corr: float = 0.70
+    # peak deflections above this are non-physiological for a single chest-lead
+    # QRS (real beats in field recordings sit under ~3 mV); a complex this large
+    # is a motion artifact, not a PVC, and is vetoed. Observed: a ~13 mV motion
+    # spike otherwise produced a false PVC.
+    max_amplitude_mv: float = 5.0
 
 
 @dataclass
@@ -81,9 +86,15 @@ def classify_beat(f: BeatFeatures, cfg: ClassifierConfig) -> BeatLabel:
         and f.template_corr < cfg.strong_corr
     )
 
-    is_pvc = (aberrant_complex and abnormal_timing) or strong
+    # a grossly non-physiological deflection is a motion artifact, not a beat
+    # we can classify; veto any PVC call and flag it for auditing
+    artifact = abs(f.amplitude_mv) > cfg.max_amplitude_mv
+
+    is_pvc = ((aberrant_complex and abnormal_timing) or strong) and not artifact
 
     reasons = []
+    if artifact:
+        reasons.append("artifact")
     if wide:
         reasons.append("wide")
     if aberrant:
