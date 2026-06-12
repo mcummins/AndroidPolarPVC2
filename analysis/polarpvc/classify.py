@@ -44,15 +44,31 @@ class ClassifierConfig:
     # morphology so aberrant it is accepted on its own, even when the
     # coupling interval is near-normal (interpolated / non-premature PVC)
     strong_corr: float = 0.50
+    # the morphology-only "strong" path must still have plausible coupling: a
+    # grossly-aberrant complex arriving well after the expected beat (large
+    # prematurity) is a detection in a noisy gap, not a PVC. Real PVCs here
+    # ran 0.42-0.86; this ceiling stops the strong path firing on late beats.
+    strong_max_prematurity: float = 1.3
     # wide-QRS threshold; informational only (130 Hz makes width unreliable
     # as a gate -- see module docstring), reported in `reasons` for auditing
     qrs_width_ms: float = 110.0
-    # a real QRS (normal or PVC) has measurable width; a complex this narrow
-    # is a detection artifact (e.g. a sharp motion spike), not a beat we can
-    # classify. Real beats observed at >= ~69 ms; this floor vetoes the
-    # near-zero-width spurious detections that morphology alone would
-    # otherwise flag as aberrant PVCs.
+
+    # --- signal-quality vetoes: when the local signal is bad we mark the beat
+    # an artifact and decline to classify it, rather than risk a false PVC.
+    # Excluded beats are dropped from the burden denominator too. ---
+    # a real QRS (normal or PVC) has measurable, bounded width. Below the floor
+    # is a sharp motion spike. The ceiling targets only *saturation* of the
+    # width search window (~200 ms span = energy never falling back to
+    # baseline = a slow motion wave / sustained noise, not a discrete complex):
+    # the measurement is coarse, so even wide PVCs and noisy normals legitimately
+    # read up to ~180 ms -- a lower cap would wrongly exclude genuinely wide
+    # PVCs, the very hallmark we want to keep.
     min_qrs_width_ms: float = 60.0
+    max_qrs_width_ms: float = 190.0
+    # local high-frequency noise above this multiple of the recording's median
+    # marks a stretch of bad signal. Real PVCs stayed under ~2.7x; normal beats
+    # are noisier (sharp QRS), so this is set with headroom above both.
+    max_noise_ratio: float = 3.5
     # peak deflections above this are non-physiological for a single chest-lead
     # QRS (real beats in field recordings sit under ~3 mV); a complex this large
     # is a motion artifact, not a PVC, and is vetoed. Observed: a ~13 mV motion
@@ -66,6 +82,7 @@ class BeatLabel:
     t: float
     is_pvc: bool
     reasons: str  # which criteria fired, for auditing
+    is_artifact: bool = False  # bad-signal beat: excluded, not classified
 
 
 def _is_wide(f: BeatFeatures, cfg: ClassifierConfig) -> bool:
@@ -98,15 +115,22 @@ def classify_beat(f: BeatFeatures, cfg: ClassifierConfig) -> BeatLabel:
     abnormal_timing = premature or compensatory
 
     # grossly aberrant morphology stands on its own (interpolated /
-    # non-premature PVC that abnormal-timing tests would miss)
-    strong = f.template_corr < cfg.strong_corr
+    # non-premature PVC that abnormal-timing tests would miss), but only when
+    # the coupling interval is plausible -- otherwise it is noise in a gap
+    strong = f.template_corr < cfg.strong_corr and (
+        not math.isfinite(f.prematurity)
+        or f.prematurity < cfg.strong_max_prematurity
+    )
 
-    # a grossly non-physiological deflection, or an implausibly narrow
-    # complex, is a motion/detection artifact -- not a beat we can classify;
-    # veto any PVC call and flag it for auditing
+    # signal-quality veto: a grossly non-physiological deflection, an
+    # implausible QRS width, or a locally noisy stretch is not a beat we can
+    # classify. Mark it an artifact, decline to call it, and exclude it from
+    # the burden denominator downstream.
     artifact = (
         abs(f.amplitude_mv) > cfg.max_amplitude_mv
         or f.qrs_width_ms < cfg.min_qrs_width_ms
+        or f.qrs_width_ms > cfg.max_qrs_width_ms
+        or f.noise_ratio > cfg.max_noise_ratio
     )
 
     is_pvc = ((aberrant and abnormal_timing) or strong) and not artifact
@@ -125,7 +149,13 @@ def classify_beat(f: BeatFeatures, cfg: ClassifierConfig) -> BeatLabel:
     if strong:
         reasons.append("strong")
 
-    return BeatLabel(index=f.index, t=f.t, is_pvc=is_pvc, reasons="|".join(reasons))
+    return BeatLabel(
+        index=f.index,
+        t=f.t,
+        is_pvc=is_pvc,
+        reasons="|".join(reasons),
+        is_artifact=artifact,
+    )
 
 
 def classify_beats(

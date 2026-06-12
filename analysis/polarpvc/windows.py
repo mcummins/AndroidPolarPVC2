@@ -92,6 +92,14 @@ def compute_windows(
     if not features:
         return []
 
+    # bad-signal beats are not classifiable -- drop them so they count toward
+    # neither the PVC numerator nor the beat denominator of the burden
+    keep = [i for i, l in enumerate(labels) if not l.is_artifact]
+    features = [features[i] for i in keep]
+    labels = [labels[i] for i in keep]
+    if not features:
+        return []
+
     times = np.array([f.t for f in features])
     is_pvc = [bool(l.is_pvc) for l in labels]
     rhythm = classify_rhythm(is_pvc)

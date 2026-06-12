@@ -67,6 +67,7 @@ def build_viewer(
                 "amp": round(float(f.amplitude_mv), 3),
                 "pol": int(f.polarity),
                 "corr": round(float(f.template_corr), 3),
+                "nr": round(float(f.noise_ratio), 2),
             }
         )
 
@@ -367,6 +368,7 @@ function selectBeat(k, recenter){
     ['QRS width', b.qw.toFixed(0)+' ms'],
     ['amplitude', b.amp.toFixed(2)+' mV  ('+(b.pol>0?'upright':'inverted')+')'],
     ['template corr', b.corr.toFixed(2)],
+    ['noise ratio', b.nr==null?'—':b.nr.toFixed(2)+'×'],
     ['reasons fired', b.r||'—'],
   ];
   document.getElementById('kv').innerHTML = rows.map(r=>`<tr><td>${r[0]}</td><td>${r[1]}</td></tr>`).join('');
@@ -422,7 +424,9 @@ function updateStats(){
   for(const b of BEATS){ const v=verdicts[b.k]; if(disagrees(b,v)) dg.push({b,v}); }
   document.getElementById('dgCount').textContent = dg.length? `(${dg.length})` : '(none yet)';
   document.getElementById('disagree').innerHTML = dg.map(({b,v})=>{
-    const kind = b.pvc? 'FP: classifier PVC, you said '+v : 'FN: you said PVC, classifier normal';
+    const kind = b.pvc? 'FP: classifier PVC, you said '+v
+      : (classifierLabel(b)==='artifact' ? 'FN: you said PVC, classifier excluded (bad signal)'
+        : 'FN: you said PVC, classifier normal');
     return `<div data-k="${b.k}"><span>${clock(b.t)} · beat ${b.k+1}</span><span style="color:${b.pvc?COLOR.pvc:COLOR.normal}">${kind}</span></div>`;
   }).join('') || '<div class="legend" style="cursor:default">No disagreements among reviewed beats.</div>';
   document.querySelectorAll('#disagree div[data-k]').forEach(el=>{

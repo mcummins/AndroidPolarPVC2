@@ -30,6 +30,8 @@ _MORPH_PRE_S = 0.12
 _MORPH_POST_S = 0.20
 # QRS width search window around R (seconds)
 _QRS_HALF_S = 0.10
+# window (each side of R) for the local high-frequency noise estimate
+_NOISE_HALF_S = 0.20
 # fraction of the per-beat energy peak defining QRS onset/offset
 _QRS_ENVELOPE_FRAC = 0.15
 # beats on each side used for the local baseline RR (rolling median)
@@ -49,6 +51,7 @@ class BeatFeatures:
     amplitude_mv: float  # peak deflection above local baseline
     polarity: int  # +1 upright, -1 inverted
     template_corr: float  # correlation to normal template ([-1, 1])
+    noise_ratio: float = 1.0  # local HF noise / recording-median HF noise
 
 
 def _bandpass(sig, fs, lo, hi):
@@ -85,6 +88,33 @@ def _qrs_width_ms(envelope, r_idx, fs):
     while right < local.size - 1 and local[right] > thr:
         right += 1
     return (right - left) / fs * 1000.0
+
+
+def _noise_ratio(mv, fs, beats):
+    """Per-beat high-frequency noise, normalised to the recording baseline.
+
+    A clean QRS lives in the 5-25 Hz band; energy *above* 25 Hz around a beat
+    is electrode/motion noise, not cardiac signal. We take the RMS of that
+    out-of-band residual in a window around each R-peak and divide by the
+    recording's median (a robust per-recording baseline, since artifacts are
+    sparse). A real beat -- normal or PVC -- sits near 1; values several times
+    the baseline mark a stretch of bad signal we should not try to classify.
+    """
+    n = beats.size
+    if n == 0:
+        return np.ones(0)
+    hf = mv - _bandpass(mv, fs, 0.5, 25.0)
+    half = max(1, int(round(_NOISE_HALF_S * fs)))
+    rms = np.empty(n)
+    for i, r in enumerate(beats):
+        lo = max(0, int(r) - half)
+        hi = min(hf.size, int(r) + half + 1)
+        seg = hf[lo:hi]
+        rms[i] = float(np.sqrt(np.mean(seg ** 2))) if seg.size else 0.0
+    base = np.median(rms[rms > 0]) if np.any(rms > 0) else 1.0
+    if base <= 0:
+        base = 1.0
+    return rms / base
 
 
 def _baseline_mv(mv, fs, r_idx):
@@ -134,6 +164,7 @@ def extract_features(record: EcgRecord, beats: np.ndarray) -> list[BeatFeatures]
     pre = int(round(_MORPH_PRE_S * fs))
     post = int(round(_MORPH_POST_S * fs))
     envelope = _energy_envelope(mv, fs)
+    noise_ratio = _noise_ratio(mv, fs, beats)
 
     # RR intervals (seconds)
     rr_before = np.full(n, np.nan)
@@ -202,6 +233,7 @@ def extract_features(record: EcgRecord, beats: np.ndarray) -> list[BeatFeatures]
                 amplitude_mv=float(amp[i]),
                 polarity=int(polarity[i]),
                 template_corr=float(corr[i]),
+                noise_ratio=float(noise_ratio[i]),
             )
         )
     return feats

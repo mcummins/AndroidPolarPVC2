@@ -27,14 +27,20 @@ class LabeledBeats:
 
     @property
     def n_beats(self) -> int:
-        return len(self.labels)
+        """Classifiable beats (bad-signal artifacts excluded)."""
+        return sum(1 for x in self.labels if not x.is_artifact)
 
     @property
     def n_pvc(self) -> int:
         return sum(1 for x in self.labels if x.is_pvc)
 
     @property
+    def n_artifact(self) -> int:
+        return sum(1 for x in self.labels if x.is_artifact)
+
+    @property
     def burden_pct(self) -> float:
+        """PVC burden over classifiable beats (artifacts excluded)."""
         return 100.0 * self.n_pvc / self.n_beats if self.n_beats else 0.0
 
 
@@ -51,6 +57,7 @@ _COLUMNS = [
     "amplitude_mv",
     "polarity",
     "template_corr",
+    "noise_ratio",
     "is_pvc",
     "reasons",
 ]
@@ -94,6 +101,7 @@ def write_beats_csv(result: LabeledBeats, out_path: str) -> None:
                     f"{f.amplitude_mv:.4f}",
                     f.polarity,
                     f"{f.template_corr:.4f}",
+                    f"{f.noise_ratio:.3f}",
                     int(lab.is_pvc),
                     lab.reasons,
                 ]
