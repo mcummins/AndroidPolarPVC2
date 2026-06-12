@@ -122,7 +122,15 @@ only (gaps excluded, not zero-filled); times local.
 - Polar H10 device ID default hardcoded `13DFA538`; actual ID persisted to
   prefs on connect.
 - Each reinstall briefly interrupts capture; service auto-resumes.
-- Dropbox setup (one-time): create a scoped app (app-folder access,
-  files.content.write) at console.dropbox.com, put its key in
-  `local.properties` as `dropbox.app.key=...`, rebuild/install, tap
-  "Link Dropbox" in the app. Uploads land in `/Apps/<app name>/`.
+- Dropbox setup (one-time): create a scoped app (app-folder access) at
+  console.dropbox.com, enable `files.content.write` + `files.metadata.read`
+  on its Permissions tab, put its key in `local.properties` as
+  `dropbox.app.key=...`, rebuild/install, tap "Link Dropbox" in the app.
+  Uploads land in `/Apps/<app name>/`. Done 2026-06-12; account linked.
+- If "Link Dropbox" fails with a generic "Couldn't connect to Dropbox"
+  dialog: that's the installed Dropbox app's app-to-app auth swallowing
+  the real error (e.g. scope not enabled in the console). Temporarily
+  disable the Dropbox app (`adb shell pm disable-user --user 0
+  com.dropbox.android`, re-enable with `pm enable`) to force the browser
+  flow, which shows the actual error. The SDK has no flag to skip
+  app-to-app auth.

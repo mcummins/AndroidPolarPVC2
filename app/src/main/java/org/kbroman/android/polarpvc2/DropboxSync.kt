@@ -30,7 +30,9 @@ object DropboxSync {
     fun startAuth(context: Context) {
         Auth.startOAuth2PKCE(
             context, BuildConfig.DROPBOX_APP_KEY, requestConfig,
-            listOf("files.content.write")
+            // upload needs files.content.write; the pre-deletion remote
+            // existence check (getMetadata) needs files.metadata.read
+            listOf("files.content.write", "files.metadata.read")
         )
     }
 
