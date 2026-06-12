@@ -46,8 +46,8 @@ day-to-day burden variability. Eventually: remote logging + remote analysis.
   App key in `local.properties` (`dropbox.app.key`, not committed) →
   BuildConfig + manifest placeholder for the auth redirect scheme.
 
-Branch: `codex-layout-and-pvc-fixes`; remote `myfork` = mcummins fork,
-`origin` = kbroman upstream. Build:
+Branch: `main`; remote `origin` = mcummins fork (push here),
+`upstream` = kbroman (the repo this was forked from). Build:
 `ANDROID_HOME=$HOME/Library/Android/sdk ./gradlew installDebug`.
 Deployed and working on the phone as of 2026-06-11.
 
