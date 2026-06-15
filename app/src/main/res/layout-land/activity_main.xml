@@ -51,6 +51,19 @@
                 app:layout_constraintStart_toEndOf="@+id/connect_switch"
                 app:layout_constraintTop_toTopOf="parent" />
 
+            <Button
+                android:id="@+id/tag_button"
+                style="?android:attr/buttonStyleSmall"
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="16dp"
+                android:layout_marginTop="14dp"
+                android:minWidth="0dp"
+                android:text="@string/tag_activity_text"
+                android:textSize="14sp"
+                app:layout_constraintStart_toEndOf="@+id/record_switch"
+                app:layout_constraintTop_toTopOf="parent" />
+
             <TextView
                 android:id="@+id/device_textView"
                 android:layout_width="wrap_content"

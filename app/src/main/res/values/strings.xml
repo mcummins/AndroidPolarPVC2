@@ -4,4 +4,17 @@
     <string name="record_text">Record</string>
     <string name="dropbox_link_text">Link Dropbox</string>
     <string name="dropbox_linked_text">Dropbox ✓</string>
+    <string name="tag_activity_text">Tag</string>
+    <string name="tag_activity_title">Tag current activity</string>
+    <string name="tag_activity_custom_hint">Other activity…</string>
+    <string name="tag_activity_log_custom">Log</string>
+    <string name="cancel_text">Cancel</string>
+    <string-array name="activity_presets">
+        <item>work</item>
+        <item>gym</item>
+        <item>walk</item>
+        <item>cycle</item>
+        <item>home</item>
+        <item>other</item>
+    </string-array>
 </resources>

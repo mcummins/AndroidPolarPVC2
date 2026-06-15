@@ -50,6 +50,9 @@ class EventLog(private val context: Context) {
         }
     }
 
+    /** True once a session event file is open (i.e. recording is active). */
+    fun isOpen(): Boolean = writer != null
+
     fun log(event: String, detail: String = "") {
         Log.d(TAG, "$event $detail")
         try {

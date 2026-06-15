@@ -256,6 +256,18 @@ class RecordingService : Service() {
         api.foregroundEntered()
     }
 
+    /**
+     * Record a user activity tag (work/gym/walk/…) into the session event log,
+     * timestamped. Only the start of each activity is logged; the end is
+     * inferred offline (next tag or HR change). Returns false if no session is
+     * recording (the event file is only open while recording).
+     */
+    fun logActivity(label: String): Boolean {
+        if (!eventLog.isOpen()) return false
+        eventLog.log("activity", label)
+        return true
+    }
+
     fun currentFilePath(): String {
         return getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .getString(PREF_FILE_PATH, "") ?: ""

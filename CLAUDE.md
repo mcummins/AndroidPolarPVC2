@@ -32,6 +32,10 @@ day-to-day burden variability. Eventually: remote logging + remote analysis.
   stream+write errors; quoted detail field) for offline coverage
   accounting. `clock_sync` event at each hourly file open anchors the H10
   sensor clock (ECG timestamps) to the phone clock (event timestamps).
+  `activity` events log user-tagged activity (work/gym/walk/… or free text)
+  via a "Tag" button → dialog in the UI (`RecordingService.logActivity`);
+  only the start is logged, the end inferred offline (next tag / HR change).
+  Tags are recorded only while recording (event file open).
 - `DropboxSync.kt` / `UploadWorker.kt` — remote logging. One-time OAuth
   PKCE link ("Link Dropbox" in UI; refresh token in prefs). WorkManager
   worker gzips closed csv files to the app's Dropbox folder

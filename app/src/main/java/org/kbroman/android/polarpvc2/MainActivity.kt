@@ -14,8 +14,12 @@ import android.os.PowerManager
 import android.provider.Settings
 import android.util.Log
 import android.view.WindowManager
+import android.widget.Button
+import android.widget.EditText
+import android.widget.GridLayout
 import android.widget.Toast
 import androidx.activity.enableEdgeToEdge
+import androidx.appcompat.app.AlertDialog
 import androidx.activity.result.ActivityResult
 import androidx.activity.result.contract.ActivityResultContracts
 import androidx.appcompat.app.AppCompatActivity
@@ -122,6 +126,8 @@ class MainActivity : AppCompatActivity(), EcgListener {
                 sendServiceAction(RecordingService.ACTION_STOP_RECORDING)
             }
         }
+
+        binding.tagButton.setOnClickListener { showActivityTagDialog() }
 
         binding.dropboxTextView.setOnClickListener {
             when {
@@ -274,6 +280,51 @@ class MainActivity : AppCompatActivity(), EcgListener {
     private fun showToast(message: String) {
         val toast = Toast.makeText(applicationContext, message, Toast.LENGTH_LONG)
         toast.show()
+    }
+
+    // ---------- activity tagging ----------
+
+    // Lets the user mark what they're doing (work/gym/walk/…) so triggers can
+    // be identified offline. Only the start is logged; the activity's end is
+    // inferred later from the next tag or an HR change. Tags go into the
+    // session event CSV (uploaded to Dropbox with the rest of the data).
+    private fun showActivityTagDialog() {
+        val dialogView = layoutInflater.inflate(R.layout.dialog_activity_tag, null)
+        val grid = dialogView.findViewById<GridLayout>(R.id.activity_grid)
+        val custom = dialogView.findViewById<EditText>(R.id.activity_custom)
+
+        val dialog = AlertDialog.Builder(this)
+            .setTitle(R.string.tag_activity_title)
+            .setView(dialogView)
+            .setNegativeButton(R.string.cancel_text, null)
+            .setPositiveButton(R.string.tag_activity_log_custom) { _, _ ->
+                val text = custom.text.toString().trim()
+                if (text.isNotEmpty()) tagActivity(text)
+            }
+            .create()
+
+        for (preset in resources.getStringArray(R.array.activity_presets)) {
+            val btn = Button(this)
+            btn.text = preset
+            val lp = GridLayout.LayoutParams()
+            lp.width = 0
+            lp.height = GridLayout.LayoutParams.WRAP_CONTENT
+            lp.columnSpec = GridLayout.spec(GridLayout.UNDEFINED, 1, 1f)
+            lp.setMargins(8, 8, 8, 8)
+            btn.layoutParams = lp
+            btn.setOnClickListener {
+                tagActivity(preset)
+                dialog.dismiss()
+            }
+            grid.addView(btn)
+        }
+
+        dialog.show()
+    }
+
+    private fun tagActivity(label: String) {
+        val logged = service?.logActivity(label) ?: false
+        showToast(if (logged) "Tagged: $label" else "Start recording to tag activities")
     }
 
     // ---------- EcgListener (called by the service on the main thread) ----------
