@@ -46,6 +46,8 @@ class MainActivity : AppCompatActivity(), EcgListener {
     private var suppressSwitchCallbacks = false
     private var pendingRecordStart = false
     private var awaitingDropboxAuth = false
+    // guards the one-shot plot replay each time the UI returns to the foreground
+    private var plotsReplayed = false
 
     companion object {
         private const val TAG = "PolarPVC2app_main"
@@ -57,6 +59,9 @@ class MainActivity : AppCompatActivity(), EcgListener {
             service = (binder as RecordingService.LocalBinder).getService()
             service?.uiListener = this@MainActivity
             service?.appForegrounded()
+            // the UI was detached while off-screen; restore the plots from the
+            // service's buffers so history is continuous, not re-rendered from now
+            maybeReplayPlots()
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -244,6 +249,8 @@ class MainActivity : AppCompatActivity(), EcgListener {
             unbindService(serviceConnection)
             bound = false
         }
+        // next time we come back, replay buffered history into the plots
+        plotsReplayed = false
         // NOTE: the service keeps recording in the background
     }
 
@@ -264,17 +271,66 @@ class MainActivity : AppCompatActivity(), EcgListener {
         awaitingDropboxAuth = false
 
         if (ecgPlotter == null) {
-            ECGplot!!.post({
-                ecgPlotter = ECGplotter(this, ECGplot) })
+            ECGplot!!.post {
+                ecgPlotter = ECGplotter(this, ECGplot)
+                maybeReplayPlots()
+            }
         }
         if (hrPlotter == null) {
-            HRplot!!.post({
-                hrPlotter = HRplotter(this, HRplot) })
+            HRplot!!.post {
+                hrPlotter = HRplotter(this, HRplot)
+                maybeReplayPlots()
+            }
         }
         if (pvcPlotter == null) {
-            PVCplot!!.post({
-                pvcPlotter = PVCplotter(this, PVCplot) })
+            PVCplot!!.post {
+                pvcPlotter = PVCplotter(this, PVCplot)
+                maybeReplayPlots()
+            }
         }
+        // plotters already exist (returning from a brief background): replay now
+        maybeReplayPlots()
+    }
+
+    /**
+     * Restore the live plots from the service's buffers when the UI returns to
+     * the foreground. While off-screen the activity is detached from the
+     * service callbacks, so the plotters miss data; the service keeps recording
+     * and buffering, so we replay the recent ECG (+ beat markers) and the
+     * HR/PVC trends to make the plots continuous instead of re-rendering from
+     * the moment the app was re-opened. Runs once per foreground stint, only
+     * when the service and all three plotters are ready.
+     */
+    private fun maybeReplayPlots() {
+        if (plotsReplayed) return
+        val svc = service ?: return
+        val ecg = ecgPlotter ?: return
+        val hr = hrPlotter ?: return
+        val pvc = pvcPlotter ?: return
+        plotsReplayed = true
+
+        // ECG line: last 10 s from the service's ring buffer, then beat markers
+        val data = svc.pd.ecgData
+        val newest = data.maxIndex() - 1
+        val firstAvail = data.maxIndex() - data.size()
+        if (newest >= firstAvail) {
+            ecg.clear()
+            val start = maxOf(firstAvail, newest - ECGplotter.N_REPLAY_POINTS + 1)
+            for (g in start..newest) {
+                ecg.addValues(data.time.get(g) / 1e9, data.volt.get(g))
+            }
+            for (m in svc.pd.recentBeats) {
+                ecg.addPeakValue(m.timeSec, m.voltMv)
+                if (m.isPvc) ecg.addPVCValue(m.timeSec, m.voltMv)
+            }
+            ecg.updatePlot = true
+            ecg.update()
+        }
+
+        // HR / PVC trend lines: full buffered history (continuous through the
+        // off-screen period, which the plotters themselves missed)
+        hr.replaceData(svc.hrHistory)
+        pvc.replaceData(svc.pvcHistory)
     }
 
     private fun showToast(message: String) {

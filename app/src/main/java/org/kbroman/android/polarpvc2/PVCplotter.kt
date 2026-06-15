@@ -112,6 +112,23 @@ class PVCplotter (private var mActivity: MainActivity?, private var Plot: XYPlot
         update()
     }
 
+    // Rebuild the whole series from a buffered history (used to restore the
+    // plot after the activity was off-screen), redrawing once at the end.
+    fun replaceData(points: List<DoubleArray>) {
+        if (points.isEmpty()) return
+        seriesPVC!!.clear()
+        for (p in points) {
+            val time = p[0]
+            val pvc = p[1]
+            if (seriesPVC!!.size() >= N_TOTAL_POINTS) seriesPVC!!.removeFirst()
+            seriesPVC!!.addLast(time, pvc)
+            if (pvc > yMax) yMax = pvc
+            if (time > xMax) xMax = time
+            if (time < xMin) xMin = time
+        }
+        update()
+    }
+
     fun updateBoundaries() {
         Plot!!.setDomainBoundaries(xMin, xMax, BoundaryMode.FIXED)
         Plot!!.setDomainStep(StepMode.INCREMENT_BY_VAL, domainLines())

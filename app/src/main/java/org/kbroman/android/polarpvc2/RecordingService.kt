@@ -74,6 +74,14 @@ class RecordingService : Service() {
     }
 
     val pd: PeakDetection = PeakDetection()
+
+    // HR and PVC% time-series for the session, kept here (survives the UI going
+    // off-screen) so the activity can replay the trend plots when it returns.
+    // Points mirror exactly what onStats pushes to the plotters.
+    val hrHistory = ArrayList<DoubleArray>()      // [timeSec, bpm]
+    val pvcHistory = ArrayList<DoubleArray>()     // [timeSec, pvcAvePct]
+    private val MAX_TREND_POINTS = 150 * 60 * 25  // matches the plotters' cap
+
     private lateinit var wd: WriteData
     private lateinit var eventLog: EventLog
     private val handler = Handler(Looper.getMainLooper())
@@ -435,6 +443,13 @@ class RecordingService : Service() {
 
             lastHrBpm = hrBpm
             lastPvcAve = pvcAve
+
+            // mirror the plotted trend points so the UI can replay them after
+            // it was off-screen (these are populated whether or not the UI is bound)
+            hrHistory.add(doubleArrayOf(pd.rrData.lastTime, hrBpm))
+            pvcHistory.add(doubleArrayOf(pd.pvcData.lastTime, pvcAve))
+            if (hrHistory.size > MAX_TREND_POINTS) hrHistory.removeAt(0)
+            if (pvcHistory.size > MAX_TREND_POINTS) pvcHistory.removeAt(0)
 
             uiListener?.onStats(
                 hrBpm, pvcAve, pvcTotalPct,

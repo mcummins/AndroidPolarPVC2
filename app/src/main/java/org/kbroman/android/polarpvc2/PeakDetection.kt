@@ -29,6 +29,7 @@ class PeakDetection(var listener: EcgListener? = null) {
         private const val DELAY_S: Double = 4.0                  // finalize beats this far from the edge
         private const val MAX_RR_SEC: Double = 60.0 / 35.0
         private const val GAP_FACTOR: Double = 3.0              // dropout = spacing jump this many samples
+        private const val MARKER_HISTORY_S: Double = 12.0      // beat markers kept for plot replay
         const val TIMESTAMP_OFFSET: Long = 946684800000000000
         // for time offset, see https://github.com/polarofficial/polar-ble-sdk/blob/master/documentation/TimeSystemExplained.md
     }
@@ -38,6 +39,13 @@ class PeakDetection(var listener: EcgListener? = null) {
     var rrData: RunningAverage = RunningAverage(N_PEAKS_FOR_RR_AVE)
     var totalBeats: Int = 0
     var totalPVCs: Int = 0
+
+    /** A finalized beat marker, kept briefly so the UI can replay the recent
+     *  peak/PVC dots after it was off-screen (it runs detached from callbacks). */
+    data class BeatMarker(val timeSec: Double, val voltMv: Double, val isPvc: Boolean)
+    private val recentBeatsBuf = ArrayDeque<BeatMarker>()
+    /** Recent finalized beats (last MARKER_HISTORY_S), for plot replay on resume. */
+    val recentBeats: List<BeatMarker> get() = recentBeatsBuf.toList()
 
     private val cfg = PVCClassifier.ClassifierConfig()
     // global index of the first sample of the current gap-free segment
@@ -121,6 +129,7 @@ class PeakDetection(var listener: EcgListener? = null) {
 
     private fun finalizeBeat(f: EcgFeatures.BeatFeatures, label: PVCClassifier.BeatLabel, voltage: Double) {
         val beatTime = f.t
+        recordMarker(beatTime, voltage, label.isPvc && !label.isArtifact)
 
         // bad-signal beats: show the peak but exclude from the burden counts
         if (label.isArtifact) {
@@ -146,10 +155,19 @@ class PeakDetection(var listener: EcgListener? = null) {
         listener?.onPeak(beatTime, voltage)
     }
 
+    private fun recordMarker(timeSec: Double, voltage: Double, isPvc: Boolean) {
+        recentBeatsBuf.addLast(BeatMarker(timeSec, voltage, isPvc))
+        val cutoff = timeSec - MARKER_HISTORY_S
+        while (recentBeatsBuf.isNotEmpty() && recentBeatsBuf.first().timeSec < cutoff) {
+            recentBeatsBuf.removeFirst()
+        }
+    }
+
     fun clear() {
         pvcData.clear()
         rrData.clear()
         ecgData = ECGdata(N_ECG_VALS)
+        recentBeatsBuf.clear()
         totalBeats = 0
         totalPVCs = 0
         segmentStartIndex = 0

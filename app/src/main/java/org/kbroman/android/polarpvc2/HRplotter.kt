@@ -116,6 +116,24 @@ class HRplotter (private var mActivity: MainActivity?, private var Plot: XYPlot?
         update()
     }
 
+    // Rebuild the whole series from a buffered history (used to restore the
+    // plot after the activity was off-screen), redrawing once at the end.
+    fun replaceData(points: List<DoubleArray>) {
+        if (points.isEmpty()) return
+        seriesHR!!.clear()
+        for (p in points) {
+            val time = p[0]
+            val hr = p[1]
+            if (seriesHR!!.size() >= N_TOTAL_POINTS) seriesHR!!.removeFirst()
+            seriesHR!!.addLast(time, hr)
+            if (time < xMin) xMin = time
+            if (time > xMax) xMax = time
+            if (hr < yMin) yMin = Math.floor(hr / 10.0) * 10.0
+            if (hr > yMax) yMax = hr
+        }
+        update()
+    }
+
     fun updateBoundaries() {
         Plot!!.setDomainBoundaries(xMin, xMax, BoundaryMode.FIXED)
         Plot!!.setDomainStep(StepMode.INCREMENT_BY_VAL, domainLines())

@@ -18,6 +18,7 @@ class ECGplotter (private var mActivity: MainActivity?, private var Plot: XYPlot
         private const val TAG = "PolarPVC2app_plot"
         private const val SEC_TO_PLOT: Double = 10.0   // Show this many seconds
         private const val N_TOTAL_POINTS: Int = 130*10   // corresponding number of ECG data points
+        const val N_REPLAY_POINTS: Int = 130*10   // samples to replay when restoring the plot
         private const val ECG_Y_MIN: Double = -1.2
         private const val ECG_Y_MAX: Double = 3.0
     }
