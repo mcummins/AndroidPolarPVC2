@@ -4,177 +4,105 @@ import org.junit.Assert.assertEquals
 import org.junit.Assert.assertFalse
 import org.junit.Assert.assertTrue
 import org.junit.Test
+import org.kbroman.android.polarpvc2.ecg.EcgFeatures.BeatFeatures
 
+/**
+ * Unit tests for the rewritten classifier (mirrors the offline classify.py
+ * decision rule + tuned thresholds). End-to-end agreement with the Python
+ * pipeline is covered by EcgParityTest; these pin the individual rule branches.
+ */
 class PVCClassifierTest {
-    @Test
-    fun calcTestStat_returnsZeroForEmptyInput() {
-        assertEquals(0.0, PVCClassifier.calcTestStat(emptyList()), 0.0)
+
+    private fun beat(
+        corr: Double,
+        prematurity: Double = Double.NaN,
+        compensatory: Double = Double.NaN,
+        widthMs: Double = 100.0,
+        ampMv: Double = 1.0,
+        noise: Double = 1.0,
+    ) = BeatFeatures(
+        index = 0, t = 0.0, rrBefore = Double.NaN, rrAfter = Double.NaN,
+        baselineRr = Double.NaN, prematurity = prematurity, compensatory = compensatory,
+        qrsWidthMs = widthMs, amplitudeMv = ampMv, polarity = 1,
+        templateCorr = corr, noiseRatio = noise,
+    )
+
+    private fun isPvc(f: BeatFeatures) = PVCClassifier.classifyBeat(f).isPvc
+    private fun isArtifact(f: BeatFeatures) = PVCClassifier.classifyBeat(f).isArtifact
+
+    // --- the main rule: aberrant morphology + abnormal timing ---
+
+    @Test fun aberrantAndPremature_isPvc() {
+        assertTrue(isPvc(beat(corr = 0.1, prematurity = 0.6)))
     }
 
-    @Test
-    fun calcTestStat_usesMidRangeThreshold() {
-        val stat = PVCClassifier.calcTestStat(listOf(1.0, 0.5, -0.5, -1.0))
-        assertEquals(0.5, stat, 0.0001)
+    @Test fun aberrantButNormalTiming_notPvc() {
+        // low corr but coupling normal and not strong enough to stand alone
+        assertFalse(isPvc(beat(corr = 0.7, prematurity = 1.0)))
     }
 
-    // --- Single signal is never enough ---
-
-    @Test
-    fun rejectsSingleSignal_morphologyOnly() {
-        // test stat > 0.65 but nothing else (nadir=2, no RR, no width, no amp)
-        assertFalse(PVCClassifier.looksLikePVC(2, 0.9474))
+    @Test fun normalMorphologyButPremature_notPvc() {
+        // premature sinus / APC: good correlation -> not a PVC
+        assertFalse(isPvc(beat(corr = 0.97, prematurity = 0.6)))
     }
 
-    @Test
-    fun rejectsSingleSignal_amplitudeOnly() {
-        // abnormal amplitude but test stat low, nadir early, no RR
-        assertFalse(
-            PVCClassifier.looksLikePVC(
-                minPeakIndex = 2, pvcTestStat = 0.50, amplitudeRatio = 0.60
-            )
-        )
+    @Test fun aberrantWithCompensatoryPause_isPvc() {
+        assertTrue(isPvc(beat(corr = 0.5, prematurity = 0.7, compensatory = 2.0)))
     }
 
-    @Test
-    fun rejectsSingleSignal_prematureOnly() {
-        assertFalse(
-            PVCClassifier.looksLikePVC(
-                minPeakIndex = 2, pvcTestStat = 0.50,
-                rrBeforeSec = 0.60, baselineRrSec = 0.80
-            )
-        )
+    // --- strong (morphology-alone) path ---
+
+    @Test fun stronglyAberrant_standsAlone() {
+        // very low corr, coupling near-normal (interpolated PVC)
+        assertTrue(isPvc(beat(corr = -0.6, prematurity = 0.95)))
     }
 
-    @Test
-    fun rejectsWeakStatistic() {
-        // stat 0.63 < threshold 0.65, only 1 signal (nadir=6) -> rejected
-        assertFalse(PVCClassifier.looksLikePVC(6, 0.6316))
+    @Test fun stronglyAberrantButLateBeat_notPvc() {
+        // grossly aberrant but arriving after a gap -> noise, not a PVC
+        assertFalse(isPvc(beat(corr = -0.3, prematurity = 2.1)))
     }
 
-    // --- Two signals are enough ---
+    // --- signal-quality vetoes -> artifact (excluded) ---
 
-    @Test
-    fun acceptsMorphologyPlusLateNadir() {
-        // test stat > 0.65 + nadir >= 5 = 2 signals
-        assertTrue(PVCClassifier.looksLikePVC(6, 0.9474))
+    @Test fun grossAmplitude_isArtifact() {
+        val f = beat(corr = -0.5, prematurity = 0.6, ampMv = 13.0)
+        assertTrue(isArtifact(f)); assertFalse(isPvc(f))
     }
 
-    @Test
-    fun rejectsAbnormalAmplitudeWithOnlyPrematureTiming() {
-        // amplitude + premature timing is only 1 signal now (premature not standalone)
-        assertFalse(
-            PVCClassifier.looksLikePVC(
-                minPeakIndex = 2, pvcTestStat = 0.50,
-                rrBeforeSec = 0.60, baselineRrSec = 0.80,
-                amplitudeRatio = 0.60
-            )
-        )
+    @Test fun saturatedWidth_isArtifact() {
+        val f = beat(corr = -0.5, prematurity = 0.6, widthMs = 200.0)
+        assertTrue(isArtifact(f)); assertFalse(isPvc(f))
     }
 
-    @Test
-    fun acceptsAbnormalAmplitudePlusMorphology() {
-        assertTrue(
-            PVCClassifier.looksLikePVC(
-                minPeakIndex = 2, pvcTestStat = 0.70, amplitudeRatio = 0.60
-            )
-        )
+    @Test fun degenerateNarrowWidth_isArtifact() {
+        val f = beat(corr = -0.5, prematurity = 0.6, widthMs = 0.0)
+        assertTrue(isArtifact(f)); assertFalse(isPvc(f))
     }
 
-    @Test
-    fun acceptsWideQrsPlusMorphology() {
-        assertTrue(
-            PVCClassifier.looksLikePVC(
-                minPeakIndex = 2, pvcTestStat = 0.70, qrsWidth = 16
-            )
-        )
+    @Test fun noisyStretch_isArtifact() {
+        val f = beat(corr = -0.5, prematurity = 0.6, noise = 5.0)
+        assertTrue(isArtifact(f)); assertFalse(isPvc(f))
     }
 
-    @Test
-    fun acceptsAbnormalAmplitudePlusWideQrs() {
-        assertTrue(
-            PVCClassifier.looksLikePVC(
-                minPeakIndex = 2, pvcTestStat = 0.50,
-                amplitudeRatio = 0.60, qrsWidth = 16
-            )
-        )
+    @Test fun widePvcWithinBounds_notArtifact() {
+        // a genuinely wide PVC (140 ms) must NOT be vetoed by the width gate
+        val f = beat(corr = 0.1, prematurity = 0.6, widthMs = 140.0)
+        assertFalse(isArtifact(f)); assertTrue(isPvc(f))
     }
 
-    // --- Compensatory pause counts as 2, enough on its own ---
+    // --- reasons string ---
 
-    @Test
-    fun acceptsCompensatoryPauseAlone() {
-        assertTrue(
-            PVCClassifier.looksLikePVC(
-                minPeakIndex = 2, pvcTestStat = 0.50,
-                rrBeforeSec = 0.52, rrAfterSec = 0.79, baselineRrSec = 0.68
-            )
-        )
+    @Test fun reasons_listFiredCriteria() {
+        val lab = PVCClassifier.classifyBeat(beat(corr = 0.1, prematurity = 0.6, widthMs = 120.0))
+        assertTrue(lab.reasons.contains("aberrant"))
+        assertTrue(lab.reasons.contains("premature"))
+        assertTrue(lab.reasons.contains("wide"))
     }
 
-    @Test
-    fun acceptsCompensatoryPauseWithBorderlineNadir() {
-        assertTrue(
-            PVCClassifier.looksLikePVC(
-                minPeakIndex = 4, pvcTestStat = 0.9474,
-                rrBeforeSec = 0.62, rrAfterSec = 0.99, baselineRrSec = 0.80
-            )
-        )
-    }
-
-    // --- Negative index always rejected ---
-
-    @Test
-    fun rejectsNegativeNadirIndex() {
-        assertFalse(PVCClassifier.looksLikePVC(-1, 0.95, qrsWidth = 20, amplitudeRatio = 0.50))
-    }
-
-    // --- Normal amplitude near baseline is not flagged ---
-
-    @Test
-    fun rejectsNormalAmplitudeWithEarlyNadir() {
-        assertFalse(
-            PVCClassifier.looksLikePVC(
-                minPeakIndex = 1, pvcTestStat = 0.70, amplitudeRatio = 1.05
-            )
-        )
-    }
-
-    // --- hasAbnormalAmplitude ---
-
-    @Test
-    fun hasAbnormalAmplitude_detectsLowAmplitude() {
-        assertTrue(PVCClassifier.hasAbnormalAmplitude(0.60))
-    }
-
-    @Test
-    fun hasAbnormalAmplitude_detectsHighAmplitude() {
-        assertTrue(PVCClassifier.hasAbnormalAmplitude(1.50))
-    }
-
-    @Test
-    fun hasAbnormalAmplitude_rejectsNormalAmplitude() {
-        assertFalse(PVCClassifier.hasAbnormalAmplitude(1.10))
-    }
-
-    @Test
-    fun hasAbnormalAmplitude_rejectsNull() {
-        assertFalse(PVCClassifier.hasAbnormalAmplitude(null))
-    }
-
-    // --- isPremature ---
-
-    @Test
-    fun isPremature_detectsShortRR() {
-        assertTrue(PVCClassifier.isPremature(0.60, 0.80))
-    }
-
-    @Test
-    fun isPremature_rejectsNormalRR() {
-        assertFalse(PVCClassifier.isPremature(0.78, 0.80))
-    }
-
-    @Test
-    fun isPremature_rejectsNull() {
-        assertFalse(PVCClassifier.isPremature(null, 0.80))
+    @Test fun classifyBeats_mapsAll() {
+        val out = PVCClassifier.classifyBeats(listOf(beat(0.1, 0.6), beat(0.99, 1.0)))
+        assertEquals(2, out.size)
+        assertTrue(out[0].isPvc)
+        assertFalse(out[1].isPvc)
     }
 }

@@ -1,27 +1,34 @@
 package org.kbroman.android.polarpvc2
 
-import android.util.Log
 import com.polar.sdk.api.model.PolarEcgData
+import org.kbroman.android.polarpvc2.ecg.EcgDetect
+import org.kbroman.android.polarpvc2.ecg.EcgFeatures
 import kotlin.math.max
-import kotlin.math.min
-import kotlin.math.pow
-import kotlin.math.round
 
+/**
+ * Live beat detection + PVC classification, aligned with the offline pipeline
+ * (`analysis/polarpvc/`). This is a streaming wrapper around the pure
+ * [EcgDetect] / [EcgFeatures] / [PVCClassifier] ports.
+ *
+ * Rolling horizon: each batch we re-run the whole-signal Pan–Tompkins detector
+ * over a trailing window of the buffer and *finalize* a beat only once ~DELAY_S
+ * of following signal exists, so its detection and features are stable. This
+ * removes the old half-batch merge limit (which merged beats above ~160 bpm)
+ * and lets the device reuse the validated offline detector/classifier. The cost
+ * is that beat/PVC markers and stats lag the live trace edge by ~DELAY_S; the
+ * ECG trace itself still scrolls in real time.
+ */
 class PeakDetection(var listener: EcgListener? = null) {
 
     companion object {
-        private const val TAG = "PolarPVC2app_peaks"
-        private const val N_ECG_VALS: Int = 130*60*5
-        private const val N_PEAKS: Int = 150*5
+        private const val FS: Double = 130.0
+        private const val N_ECG_VALS: Int = 130 * 60 * 5         // 5-min ring buffer
         private const val N_PEAKS_FOR_RR_AVE = 25
         private const val N_PEAKS_FOR_PVC_AVE = 100
-        private const val INITIAL_PEAKS_TO_SKIP = 4
-        private const val INITIAL_ECG_TO_SKIP = 500
-        private const val MIN_PEAK_VALUE: Double = 1.5
-        private const val HR_200_INTERVAL: Int = 39  // = (60.0/200.0*130)
-        private const val MAX_RR_SEC: Double = 60.0/35.0
-        private const val MOVING_AVESD_WINDOW: Int = 500
-        private const val ADJUST_PEAK_WINDOW: Int = 4
+        private const val WINDOW_S: Double = 15.0                // trailing detection window
+        private const val DELAY_S: Double = 4.0                  // finalize beats this far from the edge
+        private const val MAX_RR_SEC: Double = 60.0 / 35.0
+        private const val GAP_FACTOR: Double = 3.0              // dropout = spacing jump this many samples
         const val TIMESTAMP_OFFSET: Long = 946684800000000000
         // for time offset, see https://github.com/polarofficial/polar-ble-sdk/blob/master/documentation/TimeSystemExplained.md
     }
@@ -29,251 +36,124 @@ class PeakDetection(var listener: EcgListener? = null) {
     var ecgData: ECGdata = ECGdata(N_ECG_VALS)
     var pvcData: RunningAverage = RunningAverage(N_PEAKS_FOR_PVC_AVE)
     var rrData: RunningAverage = RunningAverage(N_PEAKS_FOR_RR_AVE)
-    var amplitudeData: RunningAverage = RunningAverage(N_PEAKS_FOR_RR_AVE)
     var totalBeats: Int = 0
     var totalPVCs: Int = 0
-    private var peakIndexes = FixedSizedList<Int>(N_PEAKS)
-    private var movingAveSDsmsqdiff = RunningAveSD(MOVING_AVESD_WINDOW)
-    private var last_smsqdiff: Double = -Double.MAX_VALUE
-    private var smsqdiff = ArrayList<Double>()
-    private var lastPeakIndex: Int = -1
-    private var thisPeakIndex: Int = -1
+
+    private val cfg = PVCClassifier.ClassifierConfig()
+    // global index of the first sample of the current gap-free segment
+    private var segmentStartIndex: Int = 0
+    private var lastTimestampNs: Long = -1L
+    // epoch seconds of the most recently finalized beat (-1 = none yet)
+    private var lastFinalizedTimeSec: Double = -1.0
 
     fun processData(polarEcgData: PolarEcgData) {
-        // last index
-        var start: Int = ecgData.maxIndex()
+        val n = polarEcgData.samples.size
+        val times = LongArray(n)
+        val volts = DoubleArray(n)
+        for (i in 0 until n) {
+            val data = polarEcgData.samples[i]
+            times[i] = data.timeStamp + TIMESTAMP_OFFSET
+            volts[i] = data.voltage.toFloat() / 1000.0   // µV -> mV
+        }
+        ingestBatch(times, volts)
+    }
 
-        // grab a batch of data
-        for (data in polarEcgData.samples) {
-            val voltage : Double = (data.voltage.toFloat() / 1000.0)
-            val timestamp = data.timeStamp + TIMESTAMP_OFFSET
-
+    /** Core batch path (no Polar SDK types), shared by processData and tests. */
+    internal fun ingestBatch(timesNs: LongArray, voltsMv: DoubleArray) {
+        val gapThresholdNs = (GAP_FACTOR * 1e9 / FS).toLong()
+        for (i in timesNs.indices) {
+            val timestamp = timesNs[i]
+            val voltage = voltsMv[i]
+            // a jump in sample spacing is a dropout: start a new contiguous
+            // segment so detection never spans the gap
+            if (lastTimestampNs > 0 && timestamp - lastTimestampNs > gapThresholdNs) {
+                segmentStartIndex = ecgData.maxIndex()
+                lastFinalizedTimeSec = -1.0
+            }
+            lastTimestampNs = timestamp
             ecgData.add(timestamp, voltage)
-            listener?.onEcgSample(timestamp/1e9, voltage)
+            listener?.onEcgSample(timestamp / 1e9, voltage)
         }
         listener?.onEcgBatchDone()
-        val n = ecgData.maxIndex() - start
-
-        if (ecgData.maxIndex() < INITIAL_ECG_TO_SKIP) return  // wait to start looking for peaks
-
-        // look for peaks in first half
-        var end = start + n / 2
-        start = max(0.0, (start - 5).toDouble()).toInt()
-        find_peaks(start, end)
-
-        // look for peaks in second half
-        start = max(0.0, (end - 5).toDouble()).toInt()
-        find_peaks(start, ecgData.maxIndex())
+        detectAndFinalize()
     }
 
-    private fun find_peaks(start: Int, end: Int) {
-        smsqdiff.clear()
-        // get squared differences
-        for (i in start until end - 1) {
-            val diff: Double = (ecgData.volt.get(i) - ecgData.volt.get(i + 1))
-            smsqdiff.add(diff * diff)
-        }
-        smsqdiff.add(0.0)
-        smsqdiff.add(0.0)
+    private fun detectAndFinalize() {
+        val newest = ecgData.maxIndex() - 1
+        val firstAvail = ecgData.maxIndex() - ecgData.size()
+        if (newest < firstAvail) return
+        val newestTimeSec = ecgData.time.get(newest) / 1e9
 
-        // smooth in groups of three
-        for (i in 0 until smsqdiff.size - 2) {
-            smsqdiff[i] = (smsqdiff[i] + smsqdiff[i + 1] + smsqdiff[i + 2]) / 3.0
+        // trailing window, clamped to the current segment and to the buffer
+        val windowSpanStart = newestTimeSec - WINDOW_S
+        var windowStart = max(segmentStartIndex, firstAvail)
+        // advance windowStart to the first sample at/after windowSpanStart
+        var g = windowStart
+        while (g <= newest && ecgData.time.get(g) / 1e9 < windowSpanStart) g++
+        windowStart = max(windowStart, g.coerceAtMost(newest))
 
-            movingAveSDsmsqdiff.add(smsqdiff[i]) // get running mean and SD
-        }
+        val len = newest - windowStart + 1
+        if (len < (0.5 * FS).toInt()) return
 
-        // find maximum
-        val max_index = which_max(smsqdiff)
-        val this_smsqdiff: Double = smsqdiff[max_index]
-        thisPeakIndex = adjustPeak(max_index + start)
-
-        var peakFound = false
-
-        if ((this_smsqdiff - movingAveSDsmsqdiff.average()) / movingAveSDsmsqdiff.sd() >= MIN_PEAK_VALUE) { // peak only if large
-            if (peakIndexes.size() == 0 || thisPeakIndex - lastPeakIndex >= HR_200_INTERVAL) { // new peak
-                peakFound = true
-                last_smsqdiff = this_smsqdiff
-                lastPeakIndex = thisPeakIndex
-                peakIndexes.add(thisPeakIndex)
-                listener?.onPeak(ecgData.time.get(thisPeakIndex)/1e9, ecgData.volt.get(thisPeakIndex))
-            } else { // too close to previous peak
-                if (this_smsqdiff > last_smsqdiff) {
-                    last_smsqdiff = this_smsqdiff
-                    lastPeakIndex = thisPeakIndex
-                    peakIndexes.setLast(thisPeakIndex)
-                    listener?.onPeakReplaced(ecgData.time.get(thisPeakIndex)/1e9, ecgData.volt.get(thisPeakIndex))
-                    Log.d(TAG,"adjusted peak")
-                }
-            }
+        val mv = DoubleArray(len)
+        val tSec = DoubleArray(len)
+        for (i in 0 until len) {
+            val gi = windowStart + i
+            mv[i] = ecgData.volt.get(gi)
+            tSec[i] = ecgData.time.get(gi) / 1e9
         }
 
-        // now look at whether penultimate peak was a PVC
-        if (peakFound && peakIndexes.size() > INITIAL_PEAKS_TO_SKIP) {
-            val prevPeakIndex = peakIndexes.thirdLastValue()
-            val lastPeakIndex = peakIndexes.secondLastValue()
-            val thisPeakIndex = peakIndexes.lastValue()
+        val localBeats = EcgDetect.detectBeats(mv, FS)
+        if (localBeats.isEmpty()) return
+        val feats = EcgFeatures.extractFeatures(mv, tSec, localBeats, FS)
+        val labels = PVCClassifier.classifyBeats(feats, cfg)
 
-            val temp_ecg = ArrayList<Double>()
+        val cutoff = newestTimeSec - DELAY_S
+        for (k in feats.indices) {
+            val f = feats[k]
+            val beatTime = f.t
+            if (beatTime <= lastFinalizedTimeSec + 1e-9) continue   // already finalized
+            if (beatTime > cutoff) break                            // too close to the edge yet
+            finalizeBeat(f, labels[k], mv[f.index])                 // f.index is window-local
+            lastFinalizedTimeSec = beatTime
+        }
+    }
 
-            val endSearch =
-                min((thisPeakIndex - lastPeakIndex).toDouble() / 2.0, 20.0).toInt()
+    private fun finalizeBeat(f: EcgFeatures.BeatFeatures, label: PVCClassifier.BeatLabel, voltage: Double) {
+        val beatTime = f.t
 
-            for (i in 1 until endSearch) temp_ecg.add(ecgData.volt.get(lastPeakIndex + i))
-            val minPeakIndex = which_min(temp_ecg)
-            val pvcTestStat = PVCClassifier.calcTestStat(temp_ecg)
-            val rrBefore = (ecgData.time.get(lastPeakIndex) - ecgData.time.get(prevPeakIndex) )/1e9
-            val rrAfter = (ecgData.time.get(thisPeakIndex) - ecgData.time.get(lastPeakIndex) )/1e9
-            val baselineRr = rrData.average().takeIf { rrData.size() >= 5 }
+        // bad-signal beats: show the peak but exclude from the burden counts
+        if (label.isArtifact) {
+            listener?.onPeak(beatTime, voltage)
+            return
+        }
 
-            // Measure QRS width at half-height around R peak
-            val qrsWidth = measureQrsWidth(lastPeakIndex)
-
-            // Compare peak amplitude to baseline of normal beats
-            val peakAmplitude = ecgData.volt.get(lastPeakIndex)
-            val amplitudeRatio = if (amplitudeData.size() >= 5)
-                peakAmplitude / amplitudeData.average() else null
-
-            val looksLikePVC = PVCClassifier.looksLikePVC(
-                minPeakIndex = minPeakIndex,
-                pvcTestStat = pvcTestStat,
-                rrBeforeSec = rrBefore,
-                rrAfterSec = rrAfter,
-                baselineRrSec = baselineRr,
-                qrsWidth = qrsWidth,
-                amplitudeRatio = amplitudeRatio
-            )
-            Log.d(
-                TAG,
-                "minPeakIndex: $minPeakIndex   pvcTestStat: ${myround(pvcTestStat, 4)}   rrBefore: ${myround(rrBefore, 3)}   rrAfter: ${myround(rrAfter, 3)}   rrBaseline: ${baselineRr?.let { myround(it, 3) } ?: "n/a"}   qrsWidth: $qrsWidth   ampRatio: ${amplitudeRatio?.let { myround(it, 3) } ?: "n/a"}   looksLikePVC: $looksLikePVC"
-            )
-
-            totalBeats++
-            if (looksLikePVC) {
-                totalPVCs++
-                pvcData.add(1.0)
-                pvcData.lastTime = ecgData.time.get(lastPeakIndex)/1e9
-                Log.wtf(TAG, "*** PVC ***")
-                listener?.onPvc(ecgData.time.get(lastPeakIndex)/1e9, ecgData.volt.get(lastPeakIndex))
-            } else {                          // not a PVC
-                pvcData.add(0.0)
-                pvcData.lastTime = ecgData.time.get(lastPeakIndex)/1e9
-                Log.d(TAG, "not PVC")
-
-                // Only add normal beat amplitude to baseline
-                amplitudeData.add(peakAmplitude)
-            }
-
-            // Only add RR to baseline for non-PVC beats
-            val rr: Double = rrBefore
-            if(!looksLikePVC && rr < MAX_RR_SEC) {
+        totalBeats++
+        if (label.isPvc) {
+            totalPVCs++
+            pvcData.add(1.0)
+            pvcData.lastTime = beatTime
+            listener?.onPvc(beatTime, voltage)
+        } else {
+            pvcData.add(0.0)
+            pvcData.lastTime = beatTime
+            val rr = f.rrBefore
+            if (rr.isFinite() && rr in 0.0..MAX_RR_SEC) {
                 rrData.add(rr)
-                rrData.lastTime = ecgData.time.get(lastPeakIndex) / 1e9
-            } else if(rr >= MAX_RR_SEC) {
-                Log.d(TAG, "Ignoring RR = ${myround(rr, 2)} sec")
+                rrData.lastTime = beatTime
             }
         }
-    }
-
-
-    fun measureQrsWidth(peakIndex: Int): Int {
-        // Estimate baseline from samples 25-35 before the R peak
-        val baselineStart = max(0, peakIndex - 35)
-        val baselineEnd = max(0, peakIndex - 25)
-        if (baselineEnd <= baselineStart) return 0
-
-        var baselineSum = 0.0
-        for (i in baselineStart until baselineEnd) {
-            baselineSum += ecgData.volt.get(i)
-        }
-        val baseline = baselineSum / (baselineEnd - baselineStart)
-
-        val peakVolt = ecgData.volt.get(peakIndex)
-        val halfHeight = (peakVolt + baseline) / 2.0
-
-        // Walk backwards from peak until voltage drops below half-height
-        var leftWidth = 0
-        for (i in peakIndex downTo max(0, peakIndex - 20)) {
-            if (ecgData.volt.get(i) >= halfHeight) leftWidth++
-            else break
-        }
-
-        // Walk forwards from peak
-        var rightWidth = 0
-        val maxForward = min(ecgData.maxIndex() - 1, peakIndex + 20)
-        for (i in (peakIndex + 1)..maxForward) {
-            if (ecgData.volt.get(i) >= halfHeight) rightWidth++
-            else break
-        }
-
-        return leftWidth + rightWidth
-    }
-
-    fun adjustPeak (peak: Int): Int {
-        var ecg = ArrayList<Double>()
-        var start: Int = peak - ADJUST_PEAK_WINDOW
-        var end: Int = min(ecgData.maxIndex()-1, peak + ADJUST_PEAK_WINDOW)
-
-        for(i in start..end) {
-            ecg.add(ecgData.volt.get(i))
-        }
-
-        var result = which_max(ecg) + start
-        if(result != peak) Log.d(TAG, "${peak} -> ${result}   (${result - peak})")
-
-        return result
-    }
-
-
-    private fun which_max(v: ArrayList<Double>): Int {
-        if (v.isEmpty()) return (-1)
-
-        val n = v.size
-        if (n == 1) return (0)
-
-        var max = v[0]
-        var max_index = 0
-
-        for (i in 1 until n) {
-            if (v[i] > max) {
-                max_index = i
-                max = v[i]
-            }
-        }
-
-        return (max_index)
-    }
-
-    private fun which_min(v: ArrayList<Double>): Int {
-        if (v.isEmpty()) return (-1)
-
-        val n = v.size
-        if (n == 1) return (0)
-
-        var min = v[0]
-        var min_index = 0
-
-        for (i in 1 until n) {
-            if (v[i] < min) {
-                min_index = i
-                min = v[i]
-            }
-        }
-
-        return (min_index)
+        listener?.onPeak(beatTime, voltage)
     }
 
     fun clear() {
         pvcData.clear()
         rrData.clear()
-        amplitudeData.clear()
-        peakIndexes.clear()
-        movingAveSDsmsqdiff = RunningAveSD(MOVING_AVESD_WINDOW)
-        last_smsqdiff = -Double.MAX_VALUE
+        ecgData = ECGdata(N_ECG_VALS)
         totalBeats = 0
         totalPVCs = 0
-        lastPeakIndex = -1
-        thisPeakIndex = -1
+        segmentStartIndex = 0
+        lastTimestampNs = -1L
+        lastFinalizedTimeSec = -1.0
     }
-
 }

@@ -1,95 +1,90 @@
 package org.kbroman.android.polarpvc2
 
-internal object PVCClassifier {
-    const val MIN_POST_R_NADIR_INDEX = 5
-    const val TEST_STAT_THRESHOLD = 0.65
-    const val PREMATURE_RR_RATIO = 0.90
-    const val POST_RR_RATIO = 1.05
-    const val COMPENSATORY_SUM_LOWER_RATIO = 1.80
-    const val COMPENSATORY_SUM_UPPER_RATIO = 2.20
-    const val QRS_WIDTH_PVC_THRESHOLD = 14  // samples at 130 Hz (~108 ms; normal QRS < 100 ms)
-    const val AMPLITUDE_DEVIATION_THRESHOLD = 0.30  // 30% deviation from baseline amplitude
-    const val EVIDENCE_THRESHOLD = 2  // need at least 2 independent signals
+import org.kbroman.android.polarpvc2.ecg.EcgFeatures.BeatFeatures
+import kotlin.math.abs
 
-    /**
-     * Evidence-scoring approach: each independent signal contributes points.
-     * Compensatory pause counts double (very strong evidence).
-     * A beat needs >= 2 points to be classified as PVC.
-     */
-    fun looksLikePVC(
-        minPeakIndex: Int,
-        pvcTestStat: Double,
-        rrBeforeSec: Double? = null,
-        rrAfterSec: Double? = null,
-        baselineRrSec: Double? = null,
-        qrsWidth: Int = 0,
-        amplitudeRatio: Double? = null
-    ): Boolean {
-        if (minPeakIndex < 0) return false
+/**
+ * PVC classification from per-beat features — a port of the offline
+ * `analysis/polarpvc/classify.py`, so the live preview uses the same decision
+ * rule and thresholds as the validated offline pipeline.
+ *
+ * A PVC is an aberrant complex (poor correlation to the patient's own normal
+ * beat) with abnormal timing (premature OR a compensatory pause), or morphology
+ * so grossly aberrant it stands alone (interpolated / non-premature PVC).
+ * Aberrancy is judged from the template correlation, not QRS width: at the
+ * H10's 130 Hz, width is too coarse to gate on (it missed ~85% of real PVCs);
+ * width is reported only for auditing.
+ *
+ * Bad-signal beats are marked artifacts and excluded (not classified, dropped
+ * from the burden numerator and denominator) rather than risk a false PVC.
+ */
+object PVCClassifier {
 
-        var evidence = 0
+    data class ClassifierConfig(
+        val aberrantCorr: Double = 0.85,        // template corr below this = aberrant
+        val prematureRatio: Double = 0.85,      // rrBefore < ratio * baseline -> premature
+        val compensatoryMin: Double = 1.8,
+        val compensatoryMax: Double = 2.2,
+        val strongCorr: Double = 0.50,          // morphology aberrant enough to stand alone
+        val strongMaxPrematurity: Double = 1.3, // ... but only with plausible coupling
+        val qrsWidthMs: Double = 110.0,         // informational only (see class doc)
+        // signal-quality vetoes -> artifact (excluded)
+        val minQrsWidthMs: Double = 60.0,
+        val maxQrsWidthMs: Double = 190.0,
+        val maxNoiseRatio: Double = 3.5,
+        val maxAmplitudeMv: Double = 5.0,
+    )
 
-        if (pvcTestStat > TEST_STAT_THRESHOLD) evidence++
-        if (qrsWidth >= QRS_WIDTH_PVC_THRESHOLD) evidence++
-        if (hasAbnormalAmplitude(amplitudeRatio)) evidence++
-        if (minPeakIndex >= MIN_POST_R_NADIR_INDEX) evidence++
+    data class BeatLabel(
+        val index: Int,
+        val t: Double,
+        val isPvc: Boolean,
+        val isArtifact: Boolean,
+        val reasons: String,
+    )
 
-        // Compensatory pause is strong evidence (counts as 2).
-        // Premature timing alone is too noisy (normal HRV) so it is
-        // only used inside compensatory-pause detection.
-        if (hasCompensatoryPause(rrBeforeSec, rrAfterSec, baselineRrSec)) {
-            evidence += 2
-        }
+    fun classifyBeat(f: BeatFeatures, cfg: ClassifierConfig = ClassifierConfig()): BeatLabel {
+        val wide = f.qrsWidthMs >= cfg.qrsWidthMs
+        val aberrant = f.templateCorr < cfg.aberrantCorr
+        val premature = f.prematurity.isFinite() && f.prematurity < cfg.prematureRatio
+        val compensatory = f.compensatory.isFinite() && f.prematurity.isFinite() &&
+            f.prematurity < cfg.prematureRatio &&
+            f.compensatory >= cfg.compensatoryMin && f.compensatory <= cfg.compensatoryMax
 
-        return evidence >= EVIDENCE_THRESHOLD
+        val abnormalTiming = premature || compensatory
+
+        // grossly aberrant morphology stands on its own, but only with plausible
+        // coupling (a very aberrant complex after a gap is noise, not a PVC)
+        val strong = f.templateCorr < cfg.strongCorr &&
+            (!f.prematurity.isFinite() || f.prematurity < cfg.strongMaxPrematurity)
+
+        // signal-quality veto: gross deflection, implausible width, or a locally
+        // noisy stretch is not a beat we can classify
+        val artifact = abs(f.amplitudeMv) > cfg.maxAmplitudeMv ||
+            f.qrsWidthMs < cfg.minQrsWidthMs ||
+            f.qrsWidthMs > cfg.maxQrsWidthMs ||
+            f.noiseRatio > cfg.maxNoiseRatio
+
+        val isPvc = ((aberrant && abnormalTiming) || strong) && !artifact
+
+        val reasons = buildList {
+            if (artifact) add("artifact")
+            if (aberrant) add("aberrant")
+            if (wide) add("wide")
+            if (premature) add("premature")
+            if (compensatory) add("compensatory")
+            if (strong) add("strong")
+        }.joinToString("|")
+
+        return BeatLabel(
+            index = f.index,
+            t = f.t,
+            isPvc = isPvc,
+            isArtifact = artifact,
+            reasons = reasons,
+        )
     }
 
-    fun calcTestStat(values: List<Double>): Double {
-        if (values.isEmpty()) return 0.0
-
-        var minValue = values[0]
-        var maxValue = values[0]
-
-        for (value in values) {
-            if (value < minValue) minValue = value
-            if (value > maxValue) maxValue = value
-        }
-
-        val midRange = (maxValue + minValue) / 2.0
-        var countBelowMidRange = 0
-
-        for (value in values) {
-            if (value < midRange) countBelowMidRange++
-        }
-
-        return countBelowMidRange.toDouble() / values.size.toDouble()
-    }
-
-    internal fun hasAbnormalAmplitude(amplitudeRatio: Double?): Boolean {
-        if (amplitudeRatio == null) return false
-        return kotlin.math.abs(1.0 - amplitudeRatio) > AMPLITUDE_DEVIATION_THRESHOLD
-    }
-
-    internal fun isPremature(rrBeforeSec: Double?, baselineRrSec: Double?): Boolean {
-        if (rrBeforeSec == null || baselineRrSec == null || baselineRrSec <= 0.0) return false
-        return rrBeforeSec < baselineRrSec * PREMATURE_RR_RATIO
-    }
-
-    private fun hasCompensatoryPause(
-        rrBeforeSec: Double?,
-        rrAfterSec: Double?,
-        baselineRrSec: Double?
-    ): Boolean {
-        if (rrBeforeSec == null || rrAfterSec == null || baselineRrSec == null) return false
-        if (baselineRrSec <= 0.0) return false
-
-        val isPremature = rrBeforeSec < baselineRrSec * PREMATURE_RR_RATIO
-        val hasPauseAfter = rrAfterSec > baselineRrSec * POST_RR_RATIO
-        val combinedRatio = (rrBeforeSec + rrAfterSec) / baselineRrSec
-        val isCompensatoryWindow =
-            combinedRatio >= COMPENSATORY_SUM_LOWER_RATIO &&
-                combinedRatio <= COMPENSATORY_SUM_UPPER_RATIO
-
-        return isPremature && hasPauseAfter && isCompensatoryWindow
-    }
+    fun classifyBeats(feats: List<BeatFeatures>, cfg: ClassifierConfig = ClassifierConfig()): List<BeatLabel> =
+        feats.map { classifyBeat(it, cfg) }
 }
