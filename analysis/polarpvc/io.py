@@ -14,6 +14,7 @@ set of contiguous segments rather than one uniform array.
 
 from __future__ import annotations
 
+import gzip
 from dataclasses import dataclass, field
 
 import numpy as np
@@ -75,10 +76,19 @@ def split_segments(t: np.ndarray, mv: np.ndarray, fs: float) -> list[Segment]:
     return segments
 
 
+def _open_text(path: str):
+    """Open a (possibly gzipped) text file. Files uploaded to Dropbox are
+    gzipped (ecg_*.csv.gz); accept those directly so they need not be
+    decompressed first."""
+    if path.endswith(".gz"):
+        return gzip.open(path, "rt")
+    return open(path, "r")
+
+
 def load_ecg_csv(path: str) -> EcgRecord:
-    """Load an ecg_*.csv into an EcgRecord (microvolts -> millivolts)."""
+    """Load an ecg_*.csv (or ecg_*.csv.gz) into an EcgRecord (uV -> mV)."""
     metadata: dict = {}
-    with open(path, "r") as fh:
+    with _open_text(path) as fh:
         first = fh.readline()
         if first.startswith("#"):
             metadata = _parse_metadata(first)
@@ -93,7 +103,8 @@ def load_ecg_csv(path: str) -> EcgRecord:
     header = header_line.strip().split(",")
     skip = 2 if metadata else 1
 
-    raw = np.loadtxt(path, delimiter=",", skiprows=skip, comments="#")
+    with _open_text(path) as fh:
+        raw = np.loadtxt(fh, delimiter=",", skiprows=skip, comments="#")
     if raw.ndim == 1:
         raw = raw.reshape(1, -1)
 

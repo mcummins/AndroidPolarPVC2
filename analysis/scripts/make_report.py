@@ -24,15 +24,23 @@ def collect_files(inputs):
     for item in inputs:
         if os.path.isdir(item):
             files.extend(sorted(glob.glob(os.path.join(item, "ecg_*.csv"))))
+            files.extend(sorted(glob.glob(os.path.join(item, "ecg_*.csv.gz"))))
         else:
             files.extend(sorted(glob.glob(item)))
-    # de-dup, keep order
-    seen, out = set(), []
+    # de-dup by recording (a file may be present as both .csv and .csv.gz, e.g.
+    # in the Dropbox folder); prefer the uncompressed copy. keep order.
+    chosen: dict = {}
+    order = []
     for f in files:
-        if f not in seen and not f.endswith("_truth.csv"):
-            seen.add(f)
-            out.append(f)
-    return out
+        if f.endswith("_truth.csv"):
+            continue
+        key = f[:-3] if f.endswith(".gz") else f  # recording id (no .gz)
+        if key not in chosen:
+            order.append(key)
+            chosen[key] = f
+        elif chosen[key].endswith(".gz") and not f.endswith(".gz"):
+            chosen[key] = f  # replace .gz with the plain .csv
+    return [chosen[k] for k in order]
 
 
 def main():

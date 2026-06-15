@@ -102,6 +102,25 @@ class TestIoFormat(unittest.TestCase):
             # microvolt integers -> millivolt floats, within rounding
             self.assertLess(abs(loaded.mv.max() - rec.mv.max()), 0.01)
 
+    def test_loads_gzipped_csv_identically(self):
+        # files uploaded to Dropbox are gzipped (ecg_*.csv.gz); the loader must
+        # read them transparently and identically to the plain CSV
+        import gzip
+        import shutil
+
+        rec = mockdata.generate(duration_s=60, mean_hr=70, pvc_burden=0.1, seed=4)
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "ecg_mock.csv")
+            mockdata.write_ecg_csv(rec, path)
+            gz_path = path + ".gz"
+            with open(path, "rb") as src, gzip.open(gz_path, "wb") as dst:
+                shutil.copyfileobj(src, dst)
+            plain = load_ecg_csv(path)
+            gzipped = load_ecg_csv(gz_path)
+            self.assertEqual(gzipped.metadata, plain.metadata)
+            np.testing.assert_array_equal(gzipped.t, plain.t)
+            np.testing.assert_array_equal(gzipped.mv, plain.mv)
+
     def test_gap_splits_into_segments(self):
         # two 10 s blocks separated by a 5 s dropout
         fs = 130.0
