@@ -23,12 +23,15 @@ object EcgDetect {
     // --- detection constants (mirror detect.py) ---
     private const val REFRACTORY_S = 0.20      // 300 bpm ceiling
     private const val INTEGRATION_S = 0.15     // QRS integration window
-    private const val THRESHOLD_WINDOW_S = 2.5 // sliding median/MAD window
-    // moderate multiplier: a high value pushes the threshold up to the QRS
-    // energy level during walking/exercise (inflated MAD) and drops ~half the
-    // beats; the energy floor + downstream noise-ratio veto guard against noise
-    private const val THRESHOLD_MAD_K = 5.0
-    private const val THRESHOLD_FLOOR_FRAC = 0.10
+    private const val THRESHOLD_WINDOW_S = 2.5 // window for the local QRS-energy estimate
+    // Signal-relative threshold (Pan–Tompkins style): a fraction of the local
+    // QRS-energy level, estimated as a high percentile of the integrated energy.
+    // A noise + K·MAD rule climbs above the QRS during exercise (in-band motion
+    // raises the noise, QRS energy is only a few MADs over the median) and drops
+    // most beats; tracking the QRS level keeps detection working to ~170 bpm.
+    private const val THRESHOLD_PCTILE = 90.0
+    private const val THRESHOLD_SIG_FRAC = 0.35
+    private const val THRESHOLD_FLOOR_FRAC = 0.05
     private const val REFINE_WINDOW_S = 0.05
 
     /**
@@ -207,16 +210,37 @@ object EcgDetect {
         return s[lo] + (s[hi] - s[lo]) * frac
     }
 
+    /** scipy.ndimage.percentile_filter(mode="nearest"): per-window order statistic
+     *  at rank int(pctile/100 * size), clamped to [0, size-1]. */
+    internal fun percentileFilterNearest(x: DoubleArray, win: Int, pctile: Double): DoubleArray {
+        val n = x.size
+        val w = if (win % 2 == 0) win + 1 else win
+        val half = w / 2
+        val rank = min(w - 1, (pctile / 100.0 * w).toInt())
+        val out = DoubleArray(n)
+        val window = DoubleArray(w)
+        for (i in 0 until n) {
+            for (j in 0 until w) {
+                var idx = i - half + j
+                if (idx < 0) idx = 0
+                if (idx > n - 1) idx = n - 1
+                window[j] = x[idx]
+            }
+            val s = window.copyOf()
+            s.sort()
+            out[i] = s[rank]
+        }
+        return out
+    }
+
     private fun adaptiveThreshold(energy: DoubleArray, fs: Double): DoubleArray {
         var win = pyRound(THRESHOLD_WINDOW_S * fs)
         win = win or 1 // odd
         if (energy.size % 2 == 1) win = min(win, energy.size) else win = min(win, energy.size - 1)
         win = max(win, 1)
-        val med = medianFilterNearest(energy, win)
-        val absdev = DoubleArray(energy.size) { abs(energy[it] - med[it]) }
-        val mad = medianFilterNearest(absdev, win)
+        val signal = percentileFilterNearest(energy, win, THRESHOLD_PCTILE)
         val floor = THRESHOLD_FLOOR_FRAC * percentile(energy, 98.0)
-        return DoubleArray(energy.size) { max(med[it] + THRESHOLD_MAD_K * mad[it], floor) }
+        return DoubleArray(energy.size) { max(THRESHOLD_SIG_FRAC * signal[it], floor) }
     }
 
     // ---------------------------------------------------------------------

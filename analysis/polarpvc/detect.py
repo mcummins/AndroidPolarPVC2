@@ -12,7 +12,7 @@ dropout gap would be meaningless.
 from __future__ import annotations
 
 import numpy as np
-from scipy.ndimage import median_filter
+from scipy.ndimage import percentile_filter
 from scipy.signal import butter, filtfilt, find_peaks
 
 from .io import EcgRecord, Segment
@@ -21,21 +21,22 @@ from .io import EcgRecord, Segment
 _REFRACTORY_S = 0.20
 # QRS integration window
 _INTEGRATION_S = 0.15
-# sliding-threshold window: local energy stats are computed over this span so
-# the threshold tracks slow amplitude drift (electrode contact, posture) yet a
-# single motion artifact cannot raise it for more than a beat or two
+# sliding-threshold window over which the local QRS-energy level is estimated,
+# so the threshold tracks amplitude drift (contact, posture, rate)
 _THRESHOLD_WINDOW_S = 2.5
-# a candidate must exceed local median energy by this many local MADs. Kept
-# moderate (not high): during walking/exercise the integrated-energy MAD is
-# inflated by motion/EMG while the QRS energy is not much above it, so a large
-# multiplier pushes the threshold up to the QRS level and drops ~half the beats
-# (observed ~67 vs ~100 bpm on a walk). The energy floor below still rejects
-# noise in quiet stretches, and the per-beat noise-ratio veto downstream
-# excludes spurious detections in genuinely bad signal.
-_THRESHOLD_MAD_K = 5.0
-# floor the threshold at this fraction of a robust QRS-energy level so quiet
-# stretches with no beats do not detect their own noise as beats
-_THRESHOLD_FLOOR_FRAC = 0.10
+# The detection threshold is a fraction of the local QRS-energy level, estimated
+# as a high percentile of the integrated energy in the window. This is
+# signal-relative (Pan–Tompkins style) rather than a noise + K·MAD rule: during
+# exercise the in-band motion/EMG noise rises and the QRS energy is only a few
+# MADs above the local median, so a noise-relative threshold climbs above the
+# QRS and drops most beats (observed 0 detected in a 165 bpm window). Tracking
+# the QRS level instead keeps detection working from rest to ~170 bpm.
+_THRESHOLD_PCTILE = 90          # percentile of energy ~ local QRS level
+_THRESHOLD_SIG_FRAC = 0.35      # threshold = this fraction of that level
+# floor the threshold at this fraction of a robust (global) QRS-energy level so
+# quiet stretches with no beats do not detect their own noise as beats; kept low
+# enough not to block the lower-energy QRS seen during exercise
+_THRESHOLD_FLOOR_FRAC = 0.05
 
 
 def _bandpass(sig: np.ndarray, fs: float, lo: float, hi: float) -> np.ndarray:
@@ -82,14 +83,15 @@ def _detect_in_array(
 
 
 def _adaptive_threshold(energy: np.ndarray, fs: float) -> np.ndarray:
-    """Per-sample detection threshold: local median + K·MAD of the energy,
-    floored at a fraction of a robust QRS-energy level."""
+    """Per-sample detection threshold: a fraction of the local QRS-energy level
+    (a high percentile of energy in the window), floored at a fraction of a
+    robust global QRS-energy level. Signal-relative so it adapts from rest to
+    exercise; the floor stops quiet stretches detecting their own noise."""
     win = int(round(_THRESHOLD_WINDOW_S * fs)) | 1  # odd window
     win = min(win, energy.size if energy.size % 2 else energy.size - 1)
     win = max(win, 1)
-    med = median_filter(energy, size=win, mode="nearest")
-    mad = median_filter(np.abs(energy - med), size=win, mode="nearest")
-    thr = med + _THRESHOLD_MAD_K * mad
+    signal = percentile_filter(energy, _THRESHOLD_PCTILE, size=win, mode="nearest")
+    thr = _THRESHOLD_SIG_FRAC * signal
     # QRS complexes occupy a small fraction of the record, so a high energy
     # percentile is a robust stand-in for "typical beat energy".
     floor = _THRESHOLD_FLOOR_FRAC * float(np.percentile(energy, 98))
