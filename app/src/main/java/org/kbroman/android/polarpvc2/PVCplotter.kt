@@ -25,11 +25,21 @@ class PVCplotter (private var mActivity: MainActivity?, private var Plot: XYPlot
 
     companion object {
         private const val TAG = "PolarPVC2app_plotpvc"
-        private const val N_TOTAL_POINTS: Int = 150*60*25   // maximum number of data points
+        // visualization-only trend: aggregate into fixed time bins (running
+        // mean) so the rendered point count stays bounded over multi-day
+        // sessions, and throttle redraws. See HRplotter for the rationale.
+        private const val BIN_S: Double = 30.0
+        private const val MAX_BINS: Int = 5760            // ~48 h at 30 s/bin (rolling)
+        private const val REDRAW_MIN_MS: Long = 1500
     }
 
     private var formatterPVC: XYSeriesFormatter<XYRegionFormatter>? = null
     var seriesPVC: SimpleXYSeries? = null
+
+    private var curBin: Long = Long.MIN_VALUE
+    private var binSum: Double = 0.0
+    private var binCount: Int = 0
+    private var lastRedrawMs: Long = 0L
 
     init {
         formatterPVC = LineAndPointFormatter(Color.rgb(0x00 , 0x74, 0xD9), // blue lines
@@ -98,35 +108,41 @@ class PVCplotter (private var mActivity: MainActivity?, private var Plot: XYPlot
     }
 
     fun addValues(time: Double, pvc: Double) {
-        if (time != null && pvc != null) {
-            if (seriesPVC!!.size() >= N_TOTAL_POINTS) {
-                seriesPVC!!.removeFirst()
-            }
-            seriesPVC!!.addLast(time, pvc)
-
-            if(pvc > yMax) { yMax = pvc }
-            if(time > xMax) { xMax = time }
-            if(time < xMin) { xMin = time }
-        }
-
+        addBinned(time, pvc)
         update()
     }
 
+    // Accumulate into the current time bin's running mean; add a new plotted
+    // point only when a new bin starts (bounded by MAX_BINS).
+    private fun addBinned(time: Double, pvc: Double) {
+        val idx = Math.floor(time / BIN_S).toLong()
+        if (idx == curBin && seriesPVC!!.size() > 0) {
+            binSum += pvc; binCount++
+            val mean = binSum / binCount
+            seriesPVC!!.setY(mean, seriesPVC!!.size() - 1)
+            if (mean > yMax) yMax = mean
+        } else {
+            curBin = idx; binSum = pvc; binCount = 1
+            val center = (idx + 0.5) * BIN_S
+            if (seriesPVC!!.size() >= MAX_BINS) {
+                seriesPVC!!.removeFirst()
+                xMin = seriesPVC!!.getX(0).toDouble()
+            }
+            seriesPVC!!.addLast(center, pvc)
+            if (pvc > yMax) yMax = pvc
+            if (center > xMax) xMax = center
+            if (center < xMin) xMin = center
+        }
+    }
+
     // Rebuild the whole series from a buffered history (used to restore the
-    // plot after the activity was off-screen), redrawing once at the end.
+    // plot after the activity was off-screen), binned the same way.
     fun replaceData(points: List<DoubleArray>) {
         if (points.isEmpty()) return
         seriesPVC!!.clear()
-        for (p in points) {
-            val time = p[0]
-            val pvc = p[1]
-            if (seriesPVC!!.size() >= N_TOTAL_POINTS) seriesPVC!!.removeFirst()
-            seriesPVC!!.addLast(time, pvc)
-            if (pvc > yMax) yMax = pvc
-            if (time > xMax) xMax = time
-            if (time < xMin) xMin = time
-        }
-        update()
+        curBin = Long.MIN_VALUE; binSum = 0.0; binCount = 0
+        for (p in points) addBinned(p[0], p[1])
+        forceUpdate()
     }
 
     fun updateBoundaries() {
@@ -136,14 +152,23 @@ class PVCplotter (private var mActivity: MainActivity?, private var Plot: XYPlot
         Plot!!.setRangeBoundaries(0.0, yMax, BoundaryMode.FIXED)
     }
 
+    // throttled: the trend doesn't need to redraw on every batch
     fun update() {
+        val now = System.currentTimeMillis()
+        if (now - lastRedrawMs < REDRAW_MIN_MS) return
+        forceUpdate()
+    }
+
+    fun forceUpdate() {
+        lastRedrawMs = System.currentTimeMillis()
         updateBoundaries()
         mActivity!!.runOnUiThread { Plot!!.redraw() }
     }
 
     fun clear() {
         seriesPVC!!.clear()
-        update()
+        curBin = Long.MIN_VALUE; binSum = 0.0; binCount = 0
+        forceUpdate()
     }
 
     fun domainLines(): Double {

@@ -26,11 +26,23 @@ class HRplotter (private var mActivity: MainActivity?, private var Plot: XYPlot?
 
     companion object {
         private const val TAG = "PolarPVC2app_plothr"
-        private const val N_TOTAL_POINTS: Int = 150*60*25   // maximum number of data points
+        // The trend is a visualization only (authoritative data is in the CSVs),
+        // so points are aggregated into fixed time bins with a running mean to
+        // keep the rendered point count bounded over multi-day sessions, and
+        // redraws are throttled. Per-bin means also smooth the line.
+        private const val BIN_S: Double = 30.0
+        private const val MAX_BINS: Int = 5760            // ~48 h at 30 s/bin (rolling)
+        private const val REDRAW_MIN_MS: Long = 1500
     }
 
     private var formatterHR: XYSeriesFormatter<XYRegionFormatter>? = null
     var seriesHR: SimpleXYSeries? = null
+
+    // current (in-progress) bin running mean
+    private var curBin: Long = Long.MIN_VALUE
+    private var binSum: Double = 0.0
+    private var binCount: Int = 0
+    private var lastRedrawMs: Long = 0L
 
     init {
         formatterHR = LineAndPointFormatter(Color.rgb(0xFF , 0x41, 0x36), // red lines
@@ -101,37 +113,44 @@ class HRplotter (private var mActivity: MainActivity?, private var Plot: XYPlot?
 
 
     fun addValues(time: Double, hr: Double) {
-        if (time != null && hr != null) {
-            if (seriesHR!!.size() >= N_TOTAL_POINTS) {
-                seriesHR!!.removeFirst()
-            }
-            seriesHR!!.addLast(time, hr)
-        }
-
-        if(time < xMin) { xMin = time }
-        if(time > xMax) { xMax = time }
-        if(hr < yMin) { yMin = Math.floor(hr/10.0)*10.0 }
-        if(hr > yMax) { yMax = hr }
-
+        addBinned(time, hr)
         update()
     }
 
+    // Accumulate one sample into the current time bin's running mean, adding a
+    // new plotted point only when a new bin starts (bounded by MAX_BINS).
+    private fun addBinned(time: Double, hr: Double) {
+        val idx = Math.floor(time / BIN_S).toLong()
+        if (idx == curBin && seriesHR!!.size() > 0) {
+            binSum += hr; binCount++
+            val mean = binSum / binCount
+            seriesHR!!.setY(mean, seriesHR!!.size() - 1)
+            if (mean > yMax) yMax = mean
+            if (mean < yMin) yMin = Math.floor(mean / 10.0) * 10.0
+        } else {
+            curBin = idx; binSum = hr; binCount = 1
+            val center = (idx + 0.5) * BIN_S
+            if (seriesHR!!.size() >= MAX_BINS) {
+                seriesHR!!.removeFirst()
+                xMin = seriesHR!!.getX(0).toDouble()
+            }
+            seriesHR!!.addLast(center, hr)
+            if (center < xMin) xMin = center
+            if (center > xMax) xMax = center
+            if (hr > yMax) yMax = hr
+            if (hr < yMin) yMin = Math.floor(hr / 10.0) * 10.0
+        }
+    }
+
     // Rebuild the whole series from a buffered history (used to restore the
-    // plot after the activity was off-screen), redrawing once at the end.
+    // plot after the activity was off-screen), binned the same way, redrawing
+    // once at the end.
     fun replaceData(points: List<DoubleArray>) {
         if (points.isEmpty()) return
         seriesHR!!.clear()
-        for (p in points) {
-            val time = p[0]
-            val hr = p[1]
-            if (seriesHR!!.size() >= N_TOTAL_POINTS) seriesHR!!.removeFirst()
-            seriesHR!!.addLast(time, hr)
-            if (time < xMin) xMin = time
-            if (time > xMax) xMax = time
-            if (hr < yMin) yMin = Math.floor(hr / 10.0) * 10.0
-            if (hr > yMax) yMax = hr
-        }
-        update()
+        curBin = Long.MIN_VALUE; binSum = 0.0; binCount = 0
+        for (p in points) addBinned(p[0], p[1])
+        forceUpdate()
     }
 
     fun updateBoundaries() {
@@ -141,15 +160,23 @@ class HRplotter (private var mActivity: MainActivity?, private var Plot: XYPlot?
         Plot!!.setRangeBoundaries(yMin, yMax, BoundaryMode.FIXED)
     }
 
+    // throttled: the trend doesn't need to redraw on every batch
     fun update() {
-        updateBoundaries()
+        val now = System.currentTimeMillis()
+        if (now - lastRedrawMs < REDRAW_MIN_MS) return
+        forceUpdate()
+    }
 
+    fun forceUpdate() {
+        lastRedrawMs = System.currentTimeMillis()
+        updateBoundaries()
         mActivity!!.runOnUiThread { Plot!!.redraw() }
     }
 
     fun clear() {
         seriesHR!!.clear()
-        update()
+        curBin = Long.MIN_VALUE; binSum = 0.0; binCount = 0
+        forceUpdate()
     }
 
     fun domainLines(): Double {

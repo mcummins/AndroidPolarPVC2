@@ -81,9 +81,12 @@ class RecordingService : Service() {
     // HR and PVC% time-series for the session, kept here (survives the UI going
     // off-screen) so the activity can replay the trend plots when it returns.
     // Points mirror exactly what onStats pushes to the plotters.
-    val hrHistory = ArrayList<DoubleArray>()      // [timeSec, bpm]
-    val pvcHistory = ArrayList<DoubleArray>()     // [timeSec, pvcAvePct]
-    private val MAX_TREND_POINTS = 150 * 60 * 25  // matches the plotters' cap
+    // raw per-batch trend points kept only to replay the plots after the UI was
+    // backgrounded; ArrayDeque so capping is O(1). The plots bin these for
+    // display, so this is just a rolling buffer of recent history.
+    val hrHistory = ArrayDeque<DoubleArray>()     // [timeSec, bpm]
+    val pvcHistory = ArrayDeque<DoubleArray>()    // [timeSec, pvcAvePct]
+    private val MAX_TREND_POINTS = 20000  // ~3 h of replay history at ~2 points/s
 
     // most recent activity tag of the current recording session ("" if none);
     // kept here so the UI can show it and it survives the UI going off-screen
@@ -535,10 +538,10 @@ class RecordingService : Service() {
 
             // mirror the plotted trend points so the UI can replay them after
             // it was off-screen (these are populated whether or not the UI is bound)
-            hrHistory.add(doubleArrayOf(pd.rrData.lastTime, hrBpm))
-            pvcHistory.add(doubleArrayOf(pd.pvcData.lastTime, pvcAve))
-            if (hrHistory.size > MAX_TREND_POINTS) hrHistory.removeAt(0)
-            if (pvcHistory.size > MAX_TREND_POINTS) pvcHistory.removeAt(0)
+            hrHistory.addLast(doubleArrayOf(pd.rrData.lastTime, hrBpm))
+            pvcHistory.addLast(doubleArrayOf(pd.pvcData.lastTime, pvcAve))
+            if (hrHistory.size > MAX_TREND_POINTS) hrHistory.removeFirst()
+            if (pvcHistory.size > MAX_TREND_POINTS) pvcHistory.removeFirst()
 
             uiPoster.onStats(
                 hrBpm, pvcAve, pvcTotalPct,
