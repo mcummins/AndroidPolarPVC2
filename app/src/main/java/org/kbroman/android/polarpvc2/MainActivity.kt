@@ -62,6 +62,7 @@ class MainActivity : AppCompatActivity(), EcgListener {
             // the UI was detached while off-screen; restore the plots from the
             // service's buffers so history is continuous, not re-rendered from now
             maybeReplayPlots()
+            updateTagDisplay()
         }
 
         override fun onServiceDisconnected(name: ComponentName?) {
@@ -381,6 +382,12 @@ class MainActivity : AppCompatActivity(), EcgListener {
     private fun tagActivity(label: String) {
         val logged = service?.logActivity(label) ?: false
         showToast(if (logged) "Tagged: $label" else "Start recording to tag activities")
+        updateTagDisplay()
+    }
+
+    /** Show the current session's most recent activity tag (blank if none). */
+    private fun updateTagDisplay() {
+        binding.currentTagTextView.text = service?.lastActivityTag ?: ""
     }
 
     // ---------- EcgListener (called by the service on the main thread) ----------
@@ -447,6 +454,7 @@ class MainActivity : AppCompatActivity(), EcgListener {
         suppressSwitchCallbacks = true
         binding.recordSwitch.isChecked = recording
         suppressSwitchCallbacks = false
+        updateTagDisplay()  // session start/stop clears the tag
     }
 
     // ---------- output directory selection ----------

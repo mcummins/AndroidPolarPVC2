@@ -82,6 +82,10 @@ class RecordingService : Service() {
     val pvcHistory = ArrayList<DoubleArray>()     // [timeSec, pvcAvePct]
     private val MAX_TREND_POINTS = 150 * 60 * 25  // matches the plotters' cap
 
+    // most recent activity tag of the current recording session ("" if none);
+    // kept here so the UI can show it and it survives the UI going off-screen
+    var lastActivityTag: String = ""
+
     private lateinit var wd: WriteData
     private lateinit var eventLog: EventLog
     private val handler = Handler(Looper.getMainLooper())
@@ -236,6 +240,7 @@ class RecordingService : Service() {
     fun startRecording() {
         if (isRecording) return
         isRecording = true
+        lastActivityTag = ""  // fresh session
         getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit().putBoolean(PREF_RECORDING, true).apply()
         acquireWakeLock()
@@ -249,6 +254,7 @@ class RecordingService : Service() {
     fun stopRecording() {
         if (!isRecording) return
         isRecording = false
+        lastActivityTag = ""  // no current session
         getSharedPreferences(PREFS_NAME, Context.MODE_PRIVATE)
             .edit().putBoolean(PREF_RECORDING, false).apply()
         wd.closeFile()
@@ -273,6 +279,7 @@ class RecordingService : Service() {
     fun logActivity(label: String): Boolean {
         if (!eventLog.isOpen()) return false
         eventLog.log("activity", label)
+        lastActivityTag = label
         return true
     }
 

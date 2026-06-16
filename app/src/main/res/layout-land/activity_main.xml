@@ -65,6 +65,21 @@
                 app:layout_constraintTop_toTopOf="parent" />
 
             <TextView
+                android:id="@+id/current_tag_textView"
+                android:layout_width="0dp"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="12dp"
+                android:layout_marginTop="20dp"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:text=""
+                android:textColor="@color/blue"
+                android:textSize="16sp"
+                app:layout_constraintStart_toEndOf="@+id/tag_button"
+                app:layout_constraintEnd_toStartOf="@+id/device_textView"
+                app:layout_constraintTop_toTopOf="parent" />
+
+            <TextView
                 android:id="@+id/device_textView"
                 android:layout_width="wrap_content"
                 android:layout_height="wrap_content"

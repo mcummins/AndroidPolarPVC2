@@ -51,11 +51,22 @@
                 android:text="@string/tag_activity_text"
                 android:textSize="14sp" />
 
-            <LinearLayout
+            <TextView
+                android:id="@+id/current_tag_textView"
                 android:layout_width="0dp"
                 android:layout_height="wrap_content"
-                android:layout_marginStart="8dp"
+                android:layout_marginStart="6dp"
                 android:layout_weight="1"
+                android:ellipsize="end"
+                android:maxLines="1"
+                android:text=""
+                android:textColor="@color/blue"
+                android:textSize="16sp" />
+
+            <LinearLayout
+                android:layout_width="wrap_content"
+                android:layout_height="wrap_content"
+                android:layout_marginStart="8dp"
                 android:gravity="end"
                 android:orientation="vertical">
 
