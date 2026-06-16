@@ -24,11 +24,14 @@ import com.polar.sdk.api.model.PolarEcgData
 import com.polar.sdk.api.model.PolarSensorSetting
 import io.reactivex.rxjava3.android.schedulers.AndroidSchedulers
 import io.reactivex.rxjava3.disposables.Disposable
+import io.reactivex.rxjava3.schedulers.Schedulers
 import java.time.Instant
 import java.util.Calendar
 import java.util.Date
 import java.util.TimeZone
 import java.util.UUID
+import java.util.concurrent.ExecutorService
+import java.util.concurrent.Executors
 import kotlin.math.min
 import kotlin.math.roundToInt
 
@@ -118,16 +121,41 @@ class RecordingService : Service() {
         }
     }
 
+    // ECG batches are processed off the main thread (a single serial thread, so
+    // batches stay ordered) to keep detection/classification/file-I/O from
+    // blocking the UI and causing ANRs over long sessions.
+    private val ecgExecutor: ExecutorService = Executors.newSingleThreadExecutor()
+
     /** UI attaches/detaches here; null while in background. */
     var uiListener: EcgListener? = null
         set(value) {
             field = value
-            pd.listener = value
-            // push current state so the UI can sync immediately
+            // push current state so the UI can sync immediately (on main)
             value?.onConnectionChanged(deviceConnected, deviceId)
             value?.onRecordingChanged(isRecording)
             if (batteryLevel >= 0) value?.onBatteryLevel(batteryLevel)
         }
+
+    // PeakDetection runs on the ECG background thread, so its callbacks are
+    // marshalled to the main thread here before touching the UI (no-op when no
+    // UI is bound). pd.listener is set to this once, in onCreate.
+    private fun postToUi(action: (EcgListener) -> Unit) {
+        if (uiListener == null) return
+        handler.post { uiListener?.let(action) }
+    }
+
+    private val uiPoster = object : EcgListener {
+        override fun onEcgSample(timeSec: Double, voltage: Double) = postToUi { it.onEcgSample(timeSec, voltage) }
+        override fun onEcgBatchDone() = postToUi { it.onEcgBatchDone() }
+        override fun onPeak(timeSec: Double, voltage: Double) = postToUi { it.onPeak(timeSec, voltage) }
+        override fun onPeakReplaced(timeSec: Double, voltage: Double) = postToUi { it.onPeakReplaced(timeSec, voltage) }
+        override fun onPvc(timeSec: Double, voltage: Double) = postToUi { it.onPvc(timeSec, voltage) }
+        override fun onStats(hrBpm: Double, pvcAvePct: Double, pvcTotalPct: Double?, rrLastTimeSec: Double, pvcLastTimeSec: Double, enoughForPlot: Boolean) =
+            postToUi { it.onStats(hrBpm, pvcAvePct, pvcTotalPct, rrLastTimeSec, pvcLastTimeSec, enoughForPlot) }
+        override fun onConnectionChanged(connected: Boolean, deviceId: String) = postToUi { it.onConnectionChanged(connected, deviceId) }
+        override fun onBatteryLevel(level: Int) = postToUi { it.onBatteryLevel(level) }
+        override fun onRecordingChanged(recording: Boolean) = postToUi { it.onRecordingChanged(recording) }
+    }
 
     private val api: PolarBleApi by lazy {
         PolarBleApiDefaultImpl.defaultImplementation(
@@ -145,6 +173,7 @@ class RecordingService : Service() {
         super.onCreate()
         wd = WriteData(this)
         eventLog = EventLog(this)
+        pd.listener = uiPoster  // PeakDetection runs off-main; deliver to UI via main
         createNotificationChannel()
         setupApiCallback()
         UploadWorker.schedulePeriodic(this)  // backstop for missed uploads
@@ -189,6 +218,7 @@ class RecordingService : Service() {
         handler.removeCallbacksAndMessages(null)
         ecgDisposable?.dispose()
         ecgDisposable = null
+        ecgExecutor.shutdown()
         wd.closeFile()
         eventLog.close()
         UploadWorker.enqueueNow(this)  // events file just closed; upload survives service death
@@ -288,6 +318,58 @@ class RecordingService : Service() {
             .getString(PREF_FILE_PATH, "") ?: ""
     }
 
+    /** Immutable snapshot of the recent buffers for restoring the live plots. */
+    class ReplaySnapshot(
+        val ecgTimes: DoubleArray,
+        val ecgVolts: DoubleArray,
+        val beatTimes: DoubleArray,
+        val beatVolts: DoubleArray,
+        val beatIsPvc: BooleanArray,
+        val hr: List<DoubleArray>,
+        val pvc: List<DoubleArray>,
+    )
+
+    /**
+     * Build a snapshot of the recent ECG / beat markers / trend history on the
+     * ECG processing thread (so it is consistent with the writers, no locks),
+     * then deliver it to [onMain] on the main thread for the UI to replay.
+     */
+    fun requestReplaySnapshot(maxEcgPoints: Int, onMain: (ReplaySnapshot) -> Unit) {
+        try {
+            ecgExecutor.execute {
+                val data = pd.ecgData
+                val newest = data.maxIndex() - 1
+                val firstAvail = data.maxIndex() - data.size()
+                val times: DoubleArray
+                val volts: DoubleArray
+                if (newest >= firstAvail && data.size() > 0) {
+                    val start = maxOf(firstAvail, newest - maxEcgPoints + 1)
+                    val n = newest - start + 1
+                    times = DoubleArray(n)
+                    volts = DoubleArray(n)
+                    for (i in 0 until n) {
+                        val g = start + i
+                        times[i] = data.time.get(g) / 1e9
+                        volts[i] = data.volt.get(g)
+                    }
+                } else {
+                    times = DoubleArray(0); volts = DoubleArray(0)
+                }
+                val markers = pd.recentBeats
+                val bt = DoubleArray(markers.size)
+                val bv = DoubleArray(markers.size)
+                val bp = BooleanArray(markers.size)
+                for (i in markers.indices) {
+                    bt[i] = markers[i].timeSec; bv[i] = markers[i].voltMv; bp[i] = markers[i].isPvc
+                }
+                val snap = ReplaySnapshot(times, volts, bt, bv, bp, ArrayList(hrHistory), ArrayList(pvcHistory))
+                handler.post { onMain(snap) }
+            }
+        } catch (ex: Exception) {
+            Log.w(TAG, "replay snapshot rejected: $ex")  // executor shutting down
+        }
+    }
+
     // ---------- BLE callbacks and reconnect ----------
 
     private fun setupApiCallback() {
@@ -311,7 +393,7 @@ class RecordingService : Service() {
                 deviceConnected = true
                 reconnectDelayMs = INITIAL_RECONNECT_DELAY_MS
                 eventLog.log("connected", deviceId)
-                uiListener?.onConnectionChanged(true, deviceId)
+                uiPoster.onConnectionChanged(true, deviceId)
                 updateNotification(force = true)
             }
 
@@ -323,7 +405,7 @@ class RecordingService : Service() {
                 Log.d(TAG, "Disconnected: ${polarDeviceInfo.deviceId}")
                 deviceConnected = false
                 eventLog.log("disconnected", polarDeviceInfo.deviceId)
-                uiListener?.onConnectionChanged(false, deviceId)
+                uiPoster.onConnectionChanged(false, deviceId)
                 updateNotification(force = true)
                 if (shouldBeConnected) {
                     scheduleReconnect("device disconnected")
@@ -337,7 +419,7 @@ class RecordingService : Service() {
             override fun batteryLevelReceived(identifier: String, level: Int) {
                 Log.d(TAG, "Battery Level: $level")
                 batteryLevel = level
-                uiListener?.onBatteryLevel(level)
+                uiPoster.onBatteryLevel(level)
                 if (level <= 10) eventLog.log("sensor_battery_low", "$level")
 
                 // also set the local time on the device
@@ -397,7 +479,7 @@ class RecordingService : Service() {
         ecgDisposable = api.requestStreamSettings(deviceId, PolarBleApi.PolarDeviceDataType.ECG)
             .toFlowable()
             .flatMap { sensorSetting: PolarSensorSetting -> api.startEcgStreaming(deviceId, sensorSetting.maxSettings()) }
-            .observeOn(AndroidSchedulers.mainThread())
+            .observeOn(Schedulers.from(ecgExecutor))  // process off the main thread
             .subscribe(
                 { polarEcgData: PolarEcgData -> onEcgBatch(polarEcgData) },
                 { error: Throwable ->
@@ -458,7 +540,7 @@ class RecordingService : Service() {
             if (hrHistory.size > MAX_TREND_POINTS) hrHistory.removeAt(0)
             if (pvcHistory.size > MAX_TREND_POINTS) pvcHistory.removeAt(0)
 
-            uiListener?.onStats(
+            uiPoster.onStats(
                 hrBpm, pvcAve, pvcTotalPct,
                 pd.rrData.lastTime, pd.pvcData.lastTime,
                 pd.rrData.size() > 10

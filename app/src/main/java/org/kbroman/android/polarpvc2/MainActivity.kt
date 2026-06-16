@@ -305,33 +305,28 @@ class MainActivity : AppCompatActivity(), EcgListener {
     private fun maybeReplayPlots() {
         if (plotsReplayed) return
         val svc = service ?: return
-        val ecg = ecgPlotter ?: return
-        val hr = hrPlotter ?: return
-        val pvc = pvcPlotter ?: return
+        if (ecgPlotter == null || hrPlotter == null || pvcPlotter == null) return
         plotsReplayed = true
 
-        // ECG line: last 10 s from the service's ring buffer, then beat markers
-        val data = svc.pd.ecgData
-        val newest = data.maxIndex() - 1
-        val firstAvail = data.maxIndex() - data.size()
-        if (newest >= firstAvail) {
-            ecg.clear()
-            val start = maxOf(firstAvail, newest - ECGplotter.N_REPLAY_POINTS + 1)
-            for (g in start..newest) {
-                ecg.addValues(data.time.get(g) / 1e9, data.volt.get(g))
+        // ECG runs on a background thread; ask the service for a consistent
+        // snapshot of the buffers (built on that thread) and apply it on main.
+        svc.requestReplaySnapshot(ECGplotter.N_REPLAY_POINTS) { snap ->
+            val ecg = ecgPlotter ?: return@requestReplaySnapshot
+            val hr = hrPlotter ?: return@requestReplaySnapshot
+            val pvc = pvcPlotter ?: return@requestReplaySnapshot
+            if (snap.ecgVolts.isNotEmpty()) {
+                ecg.clear()
+                for (i in snap.ecgVolts.indices) ecg.addValues(snap.ecgTimes[i], snap.ecgVolts[i])
+                for (i in snap.beatVolts.indices) {
+                    ecg.addPeakValue(snap.beatTimes[i], snap.beatVolts[i])
+                    if (snap.beatIsPvc[i]) ecg.addPVCValue(snap.beatTimes[i], snap.beatVolts[i])
+                }
+                ecg.updatePlot = true
+                ecg.update()
             }
-            for (m in svc.pd.recentBeats) {
-                ecg.addPeakValue(m.timeSec, m.voltMv)
-                if (m.isPvc) ecg.addPVCValue(m.timeSec, m.voltMv)
-            }
-            ecg.updatePlot = true
-            ecg.update()
+            hr.replaceData(snap.hr)
+            pvc.replaceData(snap.pvc)
         }
-
-        // HR / PVC trend lines: full buffered history (continuous through the
-        // off-screen period, which the plotters themselves missed)
-        hr.replaceData(svc.hrHistory)
-        pvc.replaceData(svc.pvcHistory)
     }
 
     private fun showToast(message: String) {
