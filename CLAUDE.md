@@ -112,8 +112,13 @@ windows (burden, mean HR, time-of-day, date, rhythm-state fractions) and
 detects bigeminy/trigeminy runs; `report.py` writes a self-contained
 interactive HTML page (no CDN — embedded JSON + canvas JS, opens offline
 from Dropbox) with burden-vs-HR, vs-time-of-day, vs-day (each with a
-per-window-dots / binned toggle), and a rhythm-states-over-time chart.
-`scripts/make_report.py` (real files/globs/dirs) and `scripts/make_demo.py`
+per-window-dots / binned toggle), a burden-by-activity chart, and a
+rhythm-states-over-time chart. `events.py` reads activity tags from the
+event logs and `windows.burden_by_activity` pools burden per tag (each
+window assigned to the latest preceding tag, reset across recording gaps).
+`scripts/make_report.py` takes files/globs/dirs — point it at the whole
+Dropbox folder to pool every recording (reads ecg_*.csv[.gz], pulls
+activity tags from the events_*.csv[.gz] alongside). `scripts/make_demo.py`
 (synthetic multi-day demo via `mockdata.generate_session`/`diurnal_blocks`,
 with HR-dependent burden + bigeminy bouts). Burden uses recorded windows
 only (gaps excluded, not zero-filled); times local.

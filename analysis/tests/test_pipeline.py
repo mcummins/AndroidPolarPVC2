@@ -17,8 +17,9 @@ from polarpvc import label_record, label_csv, load_ecg_csv
 from polarpvc.io import EcgRecord, split_segments
 from polarpvc import mockdata
 from polarpvc.evaluate import score_detection, score_pvc
+from polarpvc.events import ActivityTag, load_activity_tags
 from polarpvc.windows import (
-    classify_rhythm, compute_windows,
+    burden_by_activity, classify_rhythm, compute_windows, Window,
     STATE_BIGEMINY, STATE_TRIGEMINY, STATE_NORMAL,
 )
 
@@ -169,6 +170,44 @@ class TestWindows(unittest.TestCase):
         for w in wins:
             self.assertTrue(40 < w.mean_hr < 120)
             self.assertTrue(0 <= w.hour_of_day < 24)
+
+
+class TestActivity(unittest.TestCase):
+    def _win(self, t, nb, npv):
+        return Window(
+            t_start=t, n_beats=nb, n_pvc=npv, burden_pct=100.0 * npv / nb,
+            mean_hr=60.0, hour_of_day=0.0, date="2026-01-01", state_fractions={},
+        )
+
+    def test_load_activity_tags(self):
+        with tempfile.TemporaryDirectory() as d:
+            path = os.path.join(d, "events_x.csv")
+            with open(path, "w") as fh:
+                fh.write("time,event,detail\n")
+                fh.write('2026-06-15T15:51:39.850596Z,recording_started,"x"\n')
+                fh.write('2026-06-15T15:55:00.000000Z,activity,"lying down"\n')
+                fh.write('2026-06-15T15:52:00.000000Z,activity,"work"\n')
+            tags = load_activity_tags([path])
+            # only activity rows, sorted by time
+            self.assertEqual([t.label for t in tags], ["work", "lying down"])
+            self.assertLess(tags[0].t_start, tags[1].t_start)
+
+    def test_window_assigned_to_latest_preceding_tag(self):
+        wins = [self._win(100, 10, 1), self._win(130, 10, 2), self._win(160, 10, 0)]
+        tags = [ActivityTag(90, "work"), ActivityTag(150, "gym")]
+        out = {a.label: a for a in burden_by_activity(wins, tags)}
+        self.assertAlmostEqual(out["work"].burden_pct, 100.0 * 3 / 20)
+        self.assertEqual(out["work"].n_windows, 2)
+        self.assertAlmostEqual(out["gym"].burden_pct, 0.0)
+
+    def test_coverage_gap_resets_activity(self):
+        # a long gap between windows means a new recording: the prior tag does
+        # not carry over until the wearer tags again
+        wins = [self._win(100, 10, 1), self._win(100 + 1000, 10, 5)]
+        tags = [ActivityTag(90, "work")]
+        out = {a.label: a for a in burden_by_activity(wins, tags)}
+        self.assertEqual(out["work"].n_windows, 1)
+        self.assertEqual(out["(untagged)"].n_windows, 1)
 
 
 if __name__ == "__main__":

@@ -1,10 +1,14 @@
 #!/usr/bin/env python3
-"""Build the HTML PVC exploration report from one or more ECG CSVs.
+"""Build the HTML PVC exploration report from one or more ECG recordings.
 
+    python scripts/make_report.py ~/Dropbox/Apps/PolarPVC2 -o report.html
     python scripts/make_report.py 'data/ecg_*.csv' -o report.html
 
-Accepts glob patterns and/or directories (all ecg_*.csv inside are used).
-Each file is labeled independently, then windows are pooled for the report.
+Accepts files, glob patterns, and/or directories (all ecg_*.csv[.gz] inside
+are used, plain .csv and gzipped). Every recording is labeled independently
+and the windows are pooled into one report. Activity tags from the events
+logs (events_*.csv[.gz]) in the same directories add a burden-by-activity
+breakdown.
 """
 
 import argparse
@@ -15,8 +19,25 @@ import sys
 sys.path.insert(0, os.path.dirname(os.path.dirname(os.path.abspath(__file__))))
 
 from polarpvc import load_ecg_csv, label_record
-from polarpvc.windows import compute_windows
+from polarpvc.events import load_activity_tags
+from polarpvc.windows import burden_by_activity, compute_windows
 from polarpvc.report import build_report
+
+
+def collect_events(inputs):
+    """Find events_*.csv[.gz] in the same directories/globs as the ECG."""
+    files = []
+    for item in inputs:
+        d = item if os.path.isdir(item) else os.path.dirname(item) or "."
+        files.extend(glob.glob(os.path.join(d, "events_*.csv")))
+        files.extend(glob.glob(os.path.join(d, "events_*.csv.gz")))
+    # de-dup, prefer plain .csv over .csv.gz of the same session
+    chosen = {}
+    for f in sorted(files):
+        key = f[:-3] if f.endswith(".gz") else f
+        if key not in chosen or (chosen[key].endswith(".gz") and not f.endswith(".gz")):
+            chosen[key] = f
+    return list(chosen.values())
 
 
 def collect_files(inputs):
@@ -31,8 +52,10 @@ def collect_files(inputs):
     # in the Dropbox folder); prefer the uncompressed copy. keep order.
     chosen: dict = {}
     order = []
+    # the ecg_*.csv glob also matches derived files (ecg_*.csv_verdicts.csv etc.)
+    derived = ("_truth.csv", "_verdicts.csv", "_viewer.html")
     for f in files:
-        if f.endswith("_truth.csv"):
+        if any(f.endswith(suf) for suf in derived):
             continue
         key = f[:-3] if f.endswith(".gz") else f  # recording id (no .gz)
         if key not in chosen:
@@ -66,7 +89,14 @@ def main():
               f"{result.n_pvc} PVCs, {len(wins)} windows")
 
     all_windows.sort(key=lambda w: w.t_start)
-    summary = build_report(all_windows, args.output, title=args.title)
+
+    tags = load_activity_tags(collect_events(args.inputs))
+    activity = burden_by_activity(all_windows, tags)
+    if tags:
+        print(f"  activity tags: {len(tags)} "
+              f"({len([a for a in activity if a.label != '(untagged)'])} distinct labels)")
+
+    summary = build_report(all_windows, args.output, title=args.title, activity=activity)
     print(f"\n{len(files)} file(s), {summary['n_windows']} windows, "
           f"{summary['coverage_hours']} h, overall burden "
           f"{summary['overall_burden_pct']}%")

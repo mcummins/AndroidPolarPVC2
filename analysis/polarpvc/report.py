@@ -18,7 +18,7 @@ import json
 import math
 from dataclasses import dataclass
 
-from .windows import RHYTHM_STATES, Window
+from .windows import ActivityBurden, RHYTHM_STATES, Window
 
 
 def _clean(x):
@@ -61,11 +61,28 @@ def _summary(windows: list[Window]) -> dict:
     }
 
 
-def build_report(windows: list[Window], out_path: str, title: str = "PVC exploration") -> dict:
+def build_report(
+    windows: list[Window],
+    out_path: str,
+    title: str = "PVC exploration",
+    activity: list[ActivityBurden] | None = None,
+) -> dict:
     summary = _summary(windows)
     payload = {
         "title": title,
         "summary": summary,
+        "activity": [
+            {
+                "label": a.label,
+                "burden": _clean(round(a.burden_pct, 2)),
+                "mean_hr": _clean(round(a.mean_hr, 1)) if a.mean_hr == a.mean_hr else None,
+                "n_beats": a.n_beats,
+                "n_pvc": a.n_pvc,
+                "n_windows": a.n_windows,
+                "hours": round(a.hours, 2),
+            }
+            for a in (activity or [])
+        ],
         "windows": [
             {
                 "t": _clean(w.t_start),
@@ -146,6 +163,12 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     <div class="note">Day-to-day variability. Dots are windows (jittered within the day); binned shows each day's mean.</div>
     <div class="toggle" data-chart="day"><button data-mode="dots" class="active">Windows</button><button data-mode="binned">Per-day mean</button></div>
     <div class="chartwrap"><canvas id="day"></canvas><div class="tip" id="day-tip"></div></div>
+  </div>
+
+  <div class="panel" id="act-panel" style="display:none">
+    <h2>PVC burden by activity</h2>
+    <div class="note">Burden while each tagged activity was in effect (from the Tag button), pooled across all occurrences. An activity runs until the next tag or a break in recording.</div>
+    <div class="chartwrap"><canvas id="act"></canvas><div class="tip" id="act-tip"></div></div>
   </div>
 
   <div class="panel">
@@ -308,6 +331,22 @@ document.querySelectorAll('.toggle').forEach(tg=>{
   };});
 });
 
+// ---- PVC burden by activity (categorical bars) ----
+function renderActivity(){
+  const A = DATA.activity || [];
+  if(!A.length){ return; }
+  document.getElementById('act-panel').style.display='';
+  const labels = A.map(a=>a.label);
+  const maxB = Math.max(5, Math.ceil(Math.max(...A.map(a=>a.burden||0))/5)*5);
+  const bins = A.map((a,i)=>({center:i+0.5, binw:1, mean:a.burden, a}));
+  bars('act', bins, {
+    xdomain:[0, A.length], ydomain:[0, maxB], binw:1,
+    xticks: A.map((a,i)=>i+0.5),
+    xfmt:t=>{ const l=labels[Math.floor(t)]||''; return l.length>12? l.slice(0,11)+'…':l; },
+    xlabel:'Activity', ylabel:'PVC burden (%)',
+    tip:b=>`${b.a.label}<br>burden ${b.a.burden!=null?b.a.burden.toFixed(1):'-'}% · mean HR ${b.a.mean_hr!=null?Math.round(b.a.mean_hr):'-'}<br>${b.a.hours.toFixed(1)} h · ${b.a.n_pvc}/${nice(b.a.n_beats)} beats`});
+}
+
 // ---- rhythm states stacked per hour ----
 function renderRhythm(){
   const canvas=document.getElementById('rhythm'); const {ctx,w,h}=setup(canvas,260);
@@ -349,7 +388,7 @@ function header(){
   tb.innerHTML=s.per_day.map(d=>`<tr><td>${d.date}</td><td>${(d.n_windows*30/3600).toFixed(1)}</td><td>${nice(d.n_beats)}</td><td>${nice(d.n_pvc)}</td><td>${d.burden_pct!=null?d.burden_pct:'-'}</td></tr>`).join('');
 }
 
-function renderAll(){ header(); render('hr'); render('tod'); render('day'); renderRhythm(); }
+function renderAll(){ header(); render('hr'); render('tod'); render('day'); renderActivity(); renderRhythm(); }
 renderAll();
 let rt; window.addEventListener('resize',()=>{ clearTimeout(rt); rt=setTimeout(renderAll,150); });
 </script>

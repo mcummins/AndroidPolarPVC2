@@ -21,15 +21,30 @@ from datetime import datetime
 import numpy as np
 
 from .classify import BeatLabel
+from .events import ActivityTag
 from .features import BeatFeatures
 
 # minimum consecutive ectopic cycles to call a stretch bi-/trigeminy
 _MIN_PATTERN_PVCS = 6
+# a jump larger than this between consecutive windows is a break in recording
+# (new session / disconnection): a prior activity tag no longer carries over
+_COVERAGE_GAP_S = 120.0
 STATE_NORMAL = "normal"
 STATE_BIGEMINY = "bigeminy"
 STATE_TRIGEMINY = "trigeminy"
 STATE_OTHER = "other"
 RHYTHM_STATES = [STATE_NORMAL, STATE_BIGEMINY, STATE_TRIGEMINY, STATE_OTHER]
+
+
+@dataclass
+class ActivityBurden:
+    label: str
+    n_windows: int
+    n_beats: int
+    n_pvc: int
+    burden_pct: float
+    mean_hr: float
+    hours: float
 
 
 @dataclass
@@ -140,3 +155,61 @@ def compute_windows(
             )
         )
     return windows
+
+
+def burden_by_activity(
+    windows: list[Window],
+    tags: list[ActivityTag],
+    include_untagged: bool = True,
+) -> list[ActivityBurden]:
+    """Aggregate PVC burden per activity label.
+
+    Each window is assigned to the activity tag in effect at its start time --
+    the most recent preceding tag -- unless a break in recording coverage has
+    occurred since the previous window, in which case the prior tag no longer
+    carries over (a new session starts untagged until the wearer tags again).
+    Burden for a label pools all its windows across every occurrence and day.
+    """
+    if not windows:
+        return []
+    wins = sorted(windows, key=lambda w: w.t_start)
+    tg = sorted(tags, key=lambda x: x.t_start)
+
+    # label -> [n_beats, n_pvc, n_windows, hr*beats, beats_with_hr]
+    agg: dict[str, list] = {}
+    ti = 0
+    current: str | None = None
+    prev_t: float | None = None
+    for w in wins:
+        if prev_t is not None and w.t_start - prev_t > _COVERAGE_GAP_S:
+            current = None  # recording gap: forget the previous activity
+        while ti < len(tg) and tg[ti].t_start <= w.t_start:
+            current = tg[ti].label
+            ti += 1
+        prev_t = w.t_start
+        label = current if current is not None else "(untagged)"
+        if label == "(untagged)" and not include_untagged:
+            continue
+        a = agg.setdefault(label, [0, 0, 0, 0.0, 0.0])
+        a[0] += w.n_beats
+        a[1] += w.n_pvc
+        a[2] += 1
+        if w.mean_hr == w.mean_hr:  # not NaN
+            a[3] += w.mean_hr * w.n_beats
+            a[4] += w.n_beats
+
+    out = [
+        ActivityBurden(
+            label=label,
+            n_windows=a[2],
+            n_beats=a[0],
+            n_pvc=a[1],
+            burden_pct=100.0 * a[1] / a[0] if a[0] else float("nan"),
+            mean_hr=a[3] / a[4] if a[4] else float("nan"),
+            hours=a[2] * 30.0 / 3600.0,
+        )
+        for label, a in agg.items()
+    ]
+    # tagged activities first (by burden desc), untagged baseline last
+    out.sort(key=lambda x: (x.label == "(untagged)", -x.burden_pct))
+    return out
