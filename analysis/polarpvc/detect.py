@@ -25,8 +25,14 @@ _INTEGRATION_S = 0.15
 # the threshold tracks slow amplitude drift (electrode contact, posture) yet a
 # single motion artifact cannot raise it for more than a beat or two
 _THRESHOLD_WINDOW_S = 2.5
-# a candidate must exceed local median energy by this many local MADs
-_THRESHOLD_MAD_K = 8.0
+# a candidate must exceed local median energy by this many local MADs. Kept
+# moderate (not high): during walking/exercise the integrated-energy MAD is
+# inflated by motion/EMG while the QRS energy is not much above it, so a large
+# multiplier pushes the threshold up to the QRS level and drops ~half the beats
+# (observed ~67 vs ~100 bpm on a walk). The energy floor below still rejects
+# noise in quiet stretches, and the per-beat noise-ratio veto downstream
+# excludes spurious detections in genuinely bad signal.
+_THRESHOLD_MAD_K = 5.0
 # floor the threshold at this fraction of a robust QRS-energy level so quiet
 # stretches with no beats do not detect their own noise as beats
 _THRESHOLD_FLOOR_FRAC = 0.10

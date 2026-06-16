@@ -24,7 +24,10 @@ object EcgDetect {
     private const val REFRACTORY_S = 0.20      // 300 bpm ceiling
     private const val INTEGRATION_S = 0.15     // QRS integration window
     private const val THRESHOLD_WINDOW_S = 2.5 // sliding median/MAD window
-    private const val THRESHOLD_MAD_K = 8.0
+    // moderate multiplier: a high value pushes the threshold up to the QRS
+    // energy level during walking/exercise (inflated MAD) and drops ~half the
+    // beats; the energy floor + downstream noise-ratio veto guard against noise
+    private const val THRESHOLD_MAD_K = 5.0
     private const val THRESHOLD_FLOOR_FRAC = 0.10
     private const val REFINE_WINDOW_S = 0.05
 
