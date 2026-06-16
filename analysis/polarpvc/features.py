@@ -28,6 +28,13 @@ from .io import EcgRecord
 # morphology window around the R-peak (seconds)
 _MORPH_PRE_S = 0.12
 _MORPH_POST_S = 0.20
+# template correlation is matched over +/- this many samples of fiducial shift.
+# A biphasic QRS (R and S nearly equal) makes the detector's fiducial jitter
+# between the R and S peaks beat-to-beat; without this tolerance the morphology
+# window shifts and a normal beat anti-correlates with the template, producing
+# mass false PVCs. The search is small enough that genuinely aberrant (wide)
+# complexes still don't match.
+_MORPH_MAX_LAG = 5
 # QRS width search window around R (seconds)
 _QRS_HALF_S = 0.10
 # window (each side of R) for the local high-frequency noise estimate
@@ -153,6 +160,41 @@ def _build_template(windows, valid_mask):
     return template
 
 
+def _correlate_lagged(mv, beats, base_arr, pre, post, template, max_lag):
+    """Per-beat correlation to the template, maximised over a small fiducial
+    shift. This makes the morphology feature robust to the detector landing on
+    the R peak for some beats and the S peak for others when the QRS is biphasic
+    (the shift is a few samples, not a shape change), without rescuing genuinely
+    aberrant complexes (their shape mismatches at every lag)."""
+    n = beats.size
+    win_len = pre + post + 1
+    corr = np.zeros(n)
+    for i in range(n):
+        r = int(beats[i])
+        b = base_arr[i]
+        best = -2.0
+        for d in range(-max_lag, max_lag + 1):
+            lo = r - pre + d
+            hi = r + post + 1 + d
+            if lo < 0 or hi > mv.size:
+                seg = np.zeros(win_len)
+                vlo = max(0, lo)
+                vhi = min(mv.size, hi)
+                valid = mv[vlo:vhi] - b
+                seg[: valid.size] = valid
+            else:
+                seg = mv[lo:hi] - b
+            seg = seg - seg.mean()
+            norm = np.linalg.norm(seg)
+            if norm > 0:
+                seg = seg / norm
+            c = float((seg * template).sum())
+            if c > best:
+                best = c
+        corr[i] = best
+    return corr
+
+
 def extract_features(record: EcgRecord, beats: np.ndarray) -> list[BeatFeatures]:
     fs = record.fs
     mv = record.mv
@@ -180,10 +222,12 @@ def extract_features(record: EcgRecord, beats: np.ndarray) -> list[BeatFeatures]
     width = np.zeros(n)
     amp = np.zeros(n)
     polarity = np.ones(n, dtype=int)
+    base_arr = np.zeros(n)
     win_len = pre + post + 1
     windows = np.zeros((n, win_len))
     for i, r in enumerate(beats):
         base = _baseline_mv(mv, fs, r)
+        base_arr[i] = base
         lo = r - pre
         hi = r + post + 1
         if lo < 0 or hi > mv.size:
@@ -198,23 +242,26 @@ def extract_features(record: EcgRecord, beats: np.ndarray) -> list[BeatFeatures]
         width[i] = _qrs_width_ms(envelope, int(r), fs)
 
     # template from beats that look normal a priori: not premature, modest
-    # width, upright. Prematurity needs baseline_rr, so guard for NaNs.
+    # width. Prematurity needs baseline_rr, so guard for NaNs. Use the
+    # recording's DOMINANT QRS polarity rather than assuming upright -- in some
+    # leads / with good electrode contact the normal beat's main deflection is
+    # negative, and assuming upright would build the template from the wrong
+    # (minority) beats and flag every normal beat as aberrant.
     prematurity = rr_before / baseline_rr
     median_width = np.median(width[width > 0]) if np.any(width > 0) else 0.0
-    template_eligible = (
-        (polarity > 0)
-        & (width <= median_width * 1.3 + 1e-9)
-        & (~(prematurity < 0.85))  # NaN-safe: unknown prematurity stays eligible
-    )
+    base_pool = (width <= median_width * 1.3 + 1e-9) & (~(prematurity < 0.85))
+    pool = base_pool if base_pool.any() else np.ones(n, dtype=bool)
+    dominant = 1 if int(np.sum(polarity[pool] > 0)) >= int(np.sum(polarity[pool] < 0)) else -1
+    template_eligible = base_pool & (polarity == dominant)
     # normalise windows before templating/correlation (zero-mean, unit-norm)
     norm_windows = _normalize_rows(windows)
     template = _build_template(norm_windows, template_eligible)
     template = _unit(template - template.mean())
 
-    # rows and template are unit-norm and zero-mean, so the row-wise dot
-    # product is the Pearson correlation; an explicit reduction avoids a
-    # spurious numpy matmul overflow warning
-    corr = (norm_windows * template).sum(axis=1)
+    # correlation to the template, matched over a small fiducial shift so a
+    # biphasic-QRS beat that the detector aligned to S instead of R still
+    # matches its own normal template (see _correlate_lagged)
+    corr = _correlate_lagged(mv, beats, base_arr, pre, post, template, _MORPH_MAX_LAG)
 
     feats = []
     for i in range(n):

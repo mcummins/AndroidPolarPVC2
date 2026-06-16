@@ -19,6 +19,11 @@ import kotlin.math.sqrt
 object EcgFeatures {
     private const val MORPH_PRE_S = 0.12
     private const val MORPH_POST_S = 0.20
+    // template correlation is matched over +/- this many samples of fiducial
+    // shift, so a biphasic QRS (R and S nearly equal) whose detected fiducial
+    // jitters between the R and S peaks still matches its own normal template
+    // instead of anti-correlating and being flagged as a PVC.
+    private const val MORPH_MAX_LAG = 5
     private const val QRS_HALF_S = 0.10
     private const val QRS_ENVELOPE_FRAC = 0.15
     private const val BASELINE_RR_BEATS = 8
@@ -131,10 +136,12 @@ object EcgFeatures {
         val width = DoubleArray(n)
         val amp = DoubleArray(n)
         val polarity = IntArray(n) { 1 }
+        val baseArr = DoubleArray(n)
         val windows = Array(n) { DoubleArray(winLen) }
         for (i in 0 until n) {
             val r = beats[i]
             val base = baselineMv(mv, fs, r)
+            baseArr[i] = base
             val lo = r - pre
             val hi = r + post + 1
             if (lo < 0 || hi > mv.size) {
@@ -156,22 +163,29 @@ object EcgFeatures {
         val posW = width.filter { it > 0.0 }
         val medianWidth = if (posW.isNotEmpty()) medianOfList(ArrayList(posW)) else 0.0
 
-        val eligible = BooleanArray(n) {
-            polarity[it] > 0 &&
-                width[it] <= medianWidth * 1.3 + 1e-9 &&
-                !(prematurity[it] < 0.85) // NaN-safe: unknown prematurity stays eligible
+        // template from non-premature, modest-width beats of the recording's
+        // DOMINANT QRS polarity (not assumed-upright), so an inverted normal
+        // morphology builds a correct template instead of flagging every beat.
+        val basePool = BooleanArray(n) {
+            width[it] <= medianWidth * 1.3 + 1e-9 &&
+                !(prematurity[it] < 0.85) // NaN-safe
         }
+        val anyPool = basePool.any { it }
+        var pos = 0; var neg = 0
+        for (i in 0 until n) {
+            if ((if (anyPool) basePool[i] else true)) {
+                if (polarity[i] > 0) pos++ else neg++
+            }
+        }
+        val dominant = if (pos >= neg) 1 else -1
+        val eligible = BooleanArray(n) { basePool[it] && polarity[it] == dominant }
 
         val normWindows = normalizeRows(windows)
         var template = buildTemplate(normWindows, eligible, winLen)
         template = unit(centerInPlace(template))
 
-        val corr = DoubleArray(n) {
-            var s = 0.0
-            val row = normWindows[it]
-            for (j in 0 until winLen) s += row[j] * template[j]
-            s
-        }
+        // correlation matched over a small fiducial shift (see MORPH_MAX_LAG)
+        val corr = correlateLagged(mv, beats, baseArr, pre, post, template)
 
         val noise = noiseRatio(mv, fs, beats)
 
@@ -197,6 +211,49 @@ object EcgFeatures {
             )
         }
         return out
+    }
+
+    /** Per-beat correlation to the template, maximised over a small fiducial
+     *  shift; mirrors features.py _correlate_lagged for cross-language parity. */
+    private fun correlateLagged(
+        mv: DoubleArray, beats: IntArray, baseArr: DoubleArray,
+        pre: Int, post: Int, template: DoubleArray,
+    ): DoubleArray {
+        val n = beats.size
+        val winLen = pre + post + 1
+        val corr = DoubleArray(n)
+        val seg = DoubleArray(winLen)
+        for (i in 0 until n) {
+            val r = beats[i]
+            val b = baseArr[i]
+            var best = -2.0
+            for (d in -MORPH_MAX_LAG..MORPH_MAX_LAG) {
+                val lo = r - pre + d
+                val hi = r + post + 1 + d
+                if (lo < 0 || hi > mv.size) {
+                    for (j in 0 until winLen) seg[j] = 0.0
+                    val vlo = max(0, lo)
+                    val vhi = min(mv.size, hi)
+                    var k = 0
+                    for (j in vlo until vhi) { seg[k] = mv[j] - b; k++ }
+                } else {
+                    for (j in 0 until winLen) seg[j] = mv[lo + j] - b
+                }
+                var mean = 0.0
+                for (v in seg) mean += v
+                mean /= winLen
+                var norm = 0.0
+                for (j in 0 until winLen) { seg[j] -= mean; norm += seg[j] * seg[j] }
+                norm = sqrt(norm)
+                var c = 0.0
+                if (norm > 0.0) {
+                    for (j in 0 until winLen) c += (seg[j] / norm) * template[j]
+                }
+                if (c > best) best = c
+            }
+            corr[i] = best
+        }
+        return corr
     }
 
     // --- linear-algebra helpers (mirror features.py) ---
