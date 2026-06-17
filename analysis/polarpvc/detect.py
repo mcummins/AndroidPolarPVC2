@@ -37,6 +37,14 @@ _SIG_FRAC = 0.35
 # candidate peaks (and the threshold floor in quiet stretches) must clear this
 # fraction of a robust global QRS-energy level, so tiny noise maxima are excluded
 _FLOOR_FRAC = 0.05
+# T-wave rejection: a normal QRS is followed ~QT later by a T-wave whose
+# integrated energy is a small fraction of the QRS. The median-of-candidates
+# threshold alone keeps it (T-waves clear the floor and, being ~as numerous as
+# QRS, drag the running median down to their own level), so each cycle is
+# detected twice. A peak within this window of, and below this fraction of, the
+# last accepted beat's energy is rejected as that beat's T-wave / noise satellite.
+_T_WINDOW_S = 0.36              # QT-interval window after an accepted beat
+_T_FRAC = 0.50                 # reject a follower below this fraction of its energy
 
 
 def _bandpass(sig: np.ndarray, fs: float, lo: float, hi: float) -> np.ndarray:
@@ -100,7 +108,32 @@ def _select_peaks(energy: np.ndarray, fs: float) -> np.ndarray:
         med = float(np.median(ce[lo:hi]))
         if ce[i] >= max(floor, _SIG_FRAC * med):
             keep.append(cand[i])
-    return np.array(keep, dtype=int)
+    return _reject_twaves(energy, np.array(keep, dtype=int), fs)
+
+
+def _reject_twaves(energy: np.ndarray, peaks: np.ndarray, fs: float) -> np.ndarray:
+    """Drop the T-wave (or noise satellite) that follows a beat within the QT
+    window. Reject a peak whose energy is below ``_T_FRAC`` of the LAST ACCEPTED
+    beat's and which falls within ``_T_WINDOW_S`` of it. The comparison is
+    forward-only and always against the last accepted beat, so it is causal (the
+    on-device streaming detector ports it unchanged) and never suppresses real
+    closely-spaced beats: PVCs and tachycardia QRS are comparable energy
+    (>= _T_FRAC of the preceding QRS), only the much smaller T-wave falls below.
+    Symmetric non-max suppression was tried and rejected: it dropped real fast
+    beats during exercise (gym 427 -> 333) when a motion-attenuated beat happened
+    to sit within the window of a larger neighbour."""
+    if peaks.size <= 1:
+        return peaks
+    twin = max(1, int(round(_T_WINDOW_S * fs)))
+    pe = energy[peaks]
+    keep = [0]
+    last = 0
+    for i in range(1, peaks.size):
+        if peaks[i] - peaks[last] < twin and pe[i] < _T_FRAC * pe[last]:
+            continue
+        keep.append(i)
+        last = i
+    return peaks[np.array(keep, dtype=int)]
 
 
 def _refine(mv, fs, peaks, window_s):

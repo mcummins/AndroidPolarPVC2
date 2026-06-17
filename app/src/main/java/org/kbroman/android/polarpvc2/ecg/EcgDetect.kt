@@ -32,6 +32,13 @@ object EcgDetect {
     private const val LOCAL_WINDOW_S = 5.0     // window for the running median of peak energies
     private const val SIG_FRAC = 0.35
     private const val FLOOR_FRAC = 0.05
+    // T-wave rejection: a normal QRS is followed ~QT later by a T-wave whose
+    // integrated energy is a small fraction of the QRS; the median-of-candidates
+    // threshold alone keeps it (T-waves drag the running median to their own
+    // level), detecting each cycle twice. Reject a peak within T_WINDOW_S of, and
+    // below T_FRAC of, the last accepted beat's energy.
+    private const val T_WINDOW_S = 0.36        // QT-interval window after an accepted beat
+    private const val T_FRAC = 0.50            // reject a follower below this fraction of its energy
     private const val REFINE_WINDOW_S = 0.05
 
     /**
@@ -238,6 +245,30 @@ object EcgDetect {
             while (cand[lo] < cand[i] - half) lo++
             val med = medianOfRange(ce, lo, hi)
             if (ce[i] >= max(floor, SIG_FRAC * med)) keep.add(cand[i])
+        }
+        return rejectTwaves(energy, keep.toIntArray(), fs)
+    }
+
+    /** Mirror of detect.py _reject_twaves: forward T-wave / noise-satellite
+     *  rejection. Drop a peak within T_WINDOW_S of, and below T_FRAC of, the last
+     *  accepted beat's energy. Forward-only and against the last accepted beat,
+     *  so it is causal (works unchanged in the streaming wrapper) and PVC-safe
+     *  (PVCs / tachycardia QRS are comparable energy; only the small T-wave
+     *  falls below). */
+    private fun rejectTwaves(energy: DoubleArray, peaks: IntArray, fs: Double): IntArray {
+        if (peaks.size <= 1) return peaks
+        val twin = max(1, pyRound(T_WINDOW_S * fs))
+        val keep = ArrayList<Int>()
+        keep.add(peaks[0])
+        var last = peaks[0]
+        var lastE = energy[peaks[0]]
+        for (i in 1 until peaks.size) {
+            val p = peaks[i]
+            val e = energy[p]
+            if (p - last < twin && e < T_FRAC * lastE) continue
+            keep.add(p)
+            last = p
+            lastE = e
         }
         return keep.toIntArray()
     }
