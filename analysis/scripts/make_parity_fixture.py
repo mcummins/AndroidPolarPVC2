@@ -51,7 +51,7 @@ def main():
     i = 60 * fs
     rec.mv[i:i + 20] += np.hanning(20) * 13.0          # gross motion spike
     j0, j1 = 75 * fs, 78 * fs
-    burst = np.random.default_rng(SEED + 1).normal(0, 0.7, j1 - j0)
+    burst = np.random.default_rng(SEED + 1).normal(0, 0.35, j1 - j0)
     rec.mv[j0:j1] += burst                              # noisy burst
     ecg_path = os.path.join(OUT_DIR, "ecg_mock.csv")
     mockdata.write_ecg_csv(rec, ecg_path)

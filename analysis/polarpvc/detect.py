@@ -12,7 +12,6 @@ dropout gap would be meaningless.
 from __future__ import annotations
 
 import numpy as np
-from scipy.ndimage import percentile_filter
 from scipy.signal import butter, filtfilt, find_peaks
 
 from .io import EcgRecord, Segment
@@ -21,22 +20,23 @@ from .io import EcgRecord, Segment
 _REFRACTORY_S = 0.20
 # QRS integration window
 _INTEGRATION_S = 0.15
-# sliding-threshold window over which the local QRS-energy level is estimated,
-# so the threshold tracks amplitude drift (contact, posture, rate)
-_THRESHOLD_WINDOW_S = 2.5
-# The detection threshold is a fraction of the local QRS-energy level, estimated
-# as a high percentile of the integrated energy in the window. This is
-# signal-relative (Pan–Tompkins style) rather than a noise + K·MAD rule: during
-# exercise the in-band motion/EMG noise rises and the QRS energy is only a few
-# MADs above the local median, so a noise-relative threshold climbs above the
-# QRS and drops most beats (observed 0 detected in a 165 bpm window). Tracking
-# the QRS level instead keeps detection working from rest to ~170 bpm.
-_THRESHOLD_PCTILE = 90          # percentile of energy ~ local QRS level
-_THRESHOLD_SIG_FRAC = 0.35      # threshold = this fraction of that level
-# floor the threshold at this fraction of a robust (global) QRS-energy level so
-# quiet stretches with no beats do not detect their own noise as beats; kept low
-# enough not to block the lower-energy QRS seen during exercise
-_THRESHOLD_FLOOR_FRAC = 0.05
+# The threshold is signal-relative: a fraction of the LOCAL QRS-energy level,
+# estimated as the running MEDIAN of candidate-peak energies. Candidate peaks are
+# local maxima above a low global floor; the median of their energies tracks the
+# typical QRS regardless of heart rate and is robust to the large motion/EMG
+# spikes seen in gym/weights work (a few outliers 3-6x the QRS that a high
+# percentile of the raw energy would chase, raising the threshold into the QRS
+# band and dropping beats). A noise + K·MAD rule instead fails the opposite way
+# during steady exercise (noise rises to the QRS level). Median-of-peaks handles
+# both, from rest to ~170 bpm.
+_LOCAL_WINDOW_S = 5.0           # window for the running median of peak energies
+# keep a peak if its energy >= this fraction of the local median. Kept low so
+# PVCs, whose (wide) integrated energy is below the normal-QRS median, are not
+# dropped; the global floor still rejects noise.
+_SIG_FRAC = 0.35
+# candidate peaks (and the threshold floor in quiet stretches) must clear this
+# fraction of a robust global QRS-energy level, so tiny noise maxima are excluded
+_FLOOR_FRAC = 0.05
 
 
 def _bandpass(sig: np.ndarray, fs: float, lo: float, hi: float) -> np.ndarray:
@@ -65,37 +65,42 @@ def _detect_in_array(
         return np.empty(0, dtype=int)
 
     energy = _integrated_energy(mv, fs)
-    refractory = max(1, int(round(_REFRACTORY_S * fs)))
-
-    # Per-sample adaptive threshold from local robust statistics. The earlier
-    # Pan–Tompkins running EWMA had a failure mode on real data: a single large
-    # motion artifact (seen ~7900x median energy in field recordings) pushes the
-    # running signal estimate so high that the threshold never recovers and all
-    # subsequent beats are missed. A windowed median/MAD threshold is immune —
-    # the median ignores the artifact, so detection resumes within a beat.
-    thr = _adaptive_threshold(energy, fs)
-    qrs_peaks, _ = find_peaks(energy, height=thr, distance=refractory)
+    peaks = _select_peaks(energy, fs)
 
     # refine each detection to the local extremum of the band-limited signal,
     # taking whichever polarity has the larger absolute deflection (PVCs are
     # frequently inverted in a single lead)
-    return _refine(mv, fs, np.array(sorted(set(qrs_peaks.tolist())), dtype=int), refine_window_s)
+    return _refine(mv, fs, peaks, refine_window_s)
 
 
-def _adaptive_threshold(energy: np.ndarray, fs: float) -> np.ndarray:
-    """Per-sample detection threshold: a fraction of the local QRS-energy level
-    (a high percentile of energy in the window), floored at a fraction of a
-    robust global QRS-energy level. Signal-relative so it adapts from rest to
-    exercise; the floor stops quiet stretches detecting their own noise."""
-    win = int(round(_THRESHOLD_WINDOW_S * fs)) | 1  # odd window
-    win = min(win, energy.size if energy.size % 2 else energy.size - 1)
-    win = max(win, 1)
-    signal = percentile_filter(energy, _THRESHOLD_PCTILE, size=win, mode="nearest")
-    thr = _THRESHOLD_SIG_FRAC * signal
-    # QRS complexes occupy a small fraction of the record, so a high energy
-    # percentile is a robust stand-in for "typical beat energy".
-    floor = _THRESHOLD_FLOOR_FRAC * float(np.percentile(energy, 98))
-    return np.maximum(thr, floor)
+def _select_peaks(energy: np.ndarray, fs: float) -> np.ndarray:
+    """Pick R-peaks from the integrated energy with a signal-relative threshold.
+
+    Candidate peaks are local maxima a refractory period apart and above a low
+    global floor (excludes tiny noise maxima). A peak is kept if its energy is at
+    least ``_SIG_FRAC`` of the running MEDIAN of nearby candidate energies — the
+    median tracks the typical QRS level at any heart rate and ignores the sparse,
+    much larger motion/EMG spikes that a percentile would chase."""
+    refractory = max(1, int(round(_REFRACTORY_S * fs)))
+    floor = _FLOOR_FRAC * float(np.percentile(energy, 98))
+    cand, _ = find_peaks(energy, height=floor, distance=refractory)
+    if cand.size == 0:
+        return cand
+    ce = energy[cand]
+    half = int(round(_LOCAL_WINDOW_S * fs))
+    keep = []
+    lo = 0
+    hi = 0
+    n = cand.size
+    for i in range(n):
+        while hi < n and cand[hi] <= cand[i] + half:
+            hi += 1
+        while cand[lo] < cand[i] - half:
+            lo += 1
+        med = float(np.median(ce[lo:hi]))
+        if ce[i] >= max(floor, _SIG_FRAC * med):
+            keep.append(cand[i])
+    return np.array(keep, dtype=int)
 
 
 def _refine(mv, fs, peaks, window_s):

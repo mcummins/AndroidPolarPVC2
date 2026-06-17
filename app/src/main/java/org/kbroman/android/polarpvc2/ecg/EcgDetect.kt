@@ -23,15 +23,15 @@ object EcgDetect {
     // --- detection constants (mirror detect.py) ---
     private const val REFRACTORY_S = 0.20      // 300 bpm ceiling
     private const val INTEGRATION_S = 0.15     // QRS integration window
-    private const val THRESHOLD_WINDOW_S = 2.5 // window for the local QRS-energy estimate
-    // Signal-relative threshold (Pan–Tompkins style): a fraction of the local
-    // QRS-energy level, estimated as a high percentile of the integrated energy.
-    // A noise + K·MAD rule climbs above the QRS during exercise (in-band motion
-    // raises the noise, QRS energy is only a few MADs over the median) and drops
-    // most beats; tracking the QRS level keeps detection working to ~170 bpm.
-    private const val THRESHOLD_PCTILE = 90.0
-    private const val THRESHOLD_SIG_FRAC = 0.35
-    private const val THRESHOLD_FLOOR_FRAC = 0.05
+    // Signal-relative threshold: keep a candidate peak if its energy is at least
+    // SIG_FRAC of the running MEDIAN of nearby candidate-peak energies. The
+    // median tracks the typical QRS at any heart rate and ignores the sparse,
+    // much larger motion/EMG spikes (gym/weights) that a percentile would chase.
+    // Candidates are local maxima above a low global floor; SIG_FRAC is low so
+    // wide (lower-energy) PVCs are not dropped.
+    private const val LOCAL_WINDOW_S = 5.0     // window for the running median of peak energies
+    private const val SIG_FRAC = 0.35
+    private const val FLOOR_FRAC = 0.05
     private const val REFINE_WINDOW_S = 0.05
 
     /**
@@ -210,37 +210,36 @@ object EcgDetect {
         return s[lo] + (s[hi] - s[lo]) * frac
     }
 
-    /** scipy.ndimage.percentile_filter(mode="nearest"): per-window order statistic
-     *  at rank int(pctile/100 * size), clamped to [0, size-1]. */
-    internal fun percentileFilterNearest(x: DoubleArray, win: Int, pctile: Double): DoubleArray {
-        val n = x.size
-        val w = if (win % 2 == 0) win + 1 else win
-        val half = w / 2
-        val rank = min(w - 1, (pctile / 100.0 * w).toInt())
-        val out = DoubleArray(n)
-        val window = DoubleArray(w)
-        for (i in 0 until n) {
-            for (j in 0 until w) {
-                var idx = i - half + j
-                if (idx < 0) idx = 0
-                if (idx > n - 1) idx = n - 1
-                window[j] = x[idx]
-            }
-            val s = window.copyOf()
-            s.sort()
-            out[i] = s[rank]
-        }
-        return out
+    /** median of x[from, to) (numpy convention: mean of the two middle for even). */
+    private fun medianOfRange(x: DoubleArray, from: Int, to: Int): Double {
+        val s = x.copyOfRange(from, to)
+        s.sort()
+        val m = s.size / 2
+        return if (s.size % 2 == 1) s[m] else (s[m - 1] + s[m]) / 2.0
     }
 
-    private fun adaptiveThreshold(energy: DoubleArray, fs: Double): DoubleArray {
-        var win = pyRound(THRESHOLD_WINDOW_S * fs)
-        win = win or 1 // odd
-        if (energy.size % 2 == 1) win = min(win, energy.size) else win = min(win, energy.size - 1)
-        win = max(win, 1)
-        val signal = percentileFilterNearest(energy, win, THRESHOLD_PCTILE)
-        val floor = THRESHOLD_FLOOR_FRAC * percentile(energy, 98.0)
-        return DoubleArray(energy.size) { max(THRESHOLD_SIG_FRAC * signal[it], floor) }
+    /** Mirror of detect.py _select_peaks: candidate local maxima above a global
+     *  floor, kept if their energy >= SIG_FRAC of the running median of nearby
+     *  candidate energies. */
+    private fun selectPeaks(energy: DoubleArray, fs: Double): IntArray {
+        val refractory = max(1, pyRound(REFRACTORY_S * fs))
+        val floor = FLOOR_FRAC * percentile(energy, 98.0)
+        val floorArr = DoubleArray(energy.size) { floor }
+        val cand = findPeaks(energy, floorArr, refractory)
+        if (cand.isEmpty()) return cand
+        val n = cand.size
+        val ce = DoubleArray(n) { energy[cand[it]] }
+        val half = pyRound(LOCAL_WINDOW_S * fs)
+        val keep = ArrayList<Int>()
+        var lo = 0
+        var hi = 0
+        for (i in 0 until n) {
+            while (hi < n && cand[hi] <= cand[i] + half) hi++
+            while (cand[lo] < cand[i] - half) lo++
+            val med = medianOfRange(ce, lo, hi)
+            if (ce[i] >= max(floor, SIG_FRAC * med)) keep.add(cand[i])
+        }
+        return keep.toIntArray()
     }
 
     // ---------------------------------------------------------------------
@@ -330,9 +329,7 @@ object EcgDetect {
         val n = mv.size
         if (n < (0.5 * fs).toInt()) return IntArray(0)
         val energy = integratedEnergy(mv, fs)
-        val refractory = max(1, pyRound(REFRACTORY_S * fs))
-        val thr = adaptiveThreshold(energy, fs)
-        val peaks = findPeaks(energy, thr, refractory)
+        val peaks = selectPeaks(energy, fs)
         return refine(mv, fs, peaks)
     }
 }
