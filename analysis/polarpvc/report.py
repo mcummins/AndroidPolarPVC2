@@ -165,6 +165,18 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
     <div class="chartwrap"><canvas id="day"></canvas><div class="tip" id="day-tip"></div></div>
   </div>
 
+  <div class="panel">
+    <h2>Day view</h2>
+    <div class="note">One row per day, midnight to midnight. Dots are 30-second PVC-burden windows (left axis, capped at 50%); the grey line is heart rate (right axis). Background is the 15-minute average heart-rate zone; white = no data.</div>
+    <div class="legend">
+      <span><span class="sw" style="background:#dcebff"></span>rest &lt;65</span>
+      <span><span class="sw" style="background:#dff3df"></span>active &lt;95</span>
+      <span><span class="sw" style="background:#ffeccc"></span>light exercise &lt;125</span>
+      <span><span class="sw" style="background:#ffd9d9"></span>exercise &ge;125</span>
+    </div>
+    <div id="dayview"></div>
+  </div>
+
   <div class="panel" id="act-panel" style="display:none">
     <h2>PVC burden by activity</h2>
     <div class="note">Burden while each tagged activity was in effect (from the Tag button), pooled across all occurrences. An activity runs until the next tag or a break in recording.</div>
@@ -347,6 +359,63 @@ function renderActivity(){
     tip:b=>`${b.a.label}<br>burden ${b.a.burden!=null?b.a.burden.toFixed(1):'-'}% · mean HR ${b.a.mean_hr!=null?Math.round(b.a.mean_hr):'-'}<br>${b.a.hours.toFixed(1)} h · ${b.a.n_pvc}/${nice(b.a.n_beats)} beats`});
 }
 
+// ---- Day view: one chart per day, midnight..midnight ----
+function hrZoneColor(hr){
+  if(hr==null) return null;
+  if(hr<65) return '#dcebff';      // rest
+  if(hr<95) return '#dff3df';      // active
+  if(hr<125) return '#ffeccc';     // light exercise
+  return '#ffd9d9';                // exercise
+}
+function renderDayView(){
+  const host=document.getElementById('dayview'); host.innerHTML='';
+  const byDay={}; for(const w of DATA.windows){ (byDay[w.day]=byDay[w.day]||[]).push(w); }
+  for(const d of DATA.summary.dates){
+    const wins=(byDay[d]||[]).slice().sort((a,b)=>a.hour-b.hour);
+    const lab=document.createElement('div'); lab.className='note'; lab.style.margin='10px 0 2px'; lab.textContent=d;
+    const wrap=document.createElement('div'); wrap.className='chartwrap';
+    const cv=document.createElement('canvas'); const tip=document.createElement('div'); tip.className='tip';
+    wrap.appendChild(cv); wrap.appendChild(tip); host.appendChild(lab); host.appendChild(wrap);
+    drawDay(cv,tip,wins);
+  }
+}
+function drawDay(canvas, tip, wins){
+  const {ctx,w,h}=setup(canvas,150);
+  const area={x0:38,y0:10,x1:w-46,y1:h-22};
+  const sx=lin(0,24,area.x0,area.x1);
+  const syB=lin(0,50,area.y1,area.y0);          // burden % (left)
+  const HRMIN=40,HRMAX=180, syH=lin(HRMIN,HRMAX,area.y1,area.y0); // HR (right)
+  // background: 15-minute mean-HR zone bands
+  for(let b=0;b<96;b++){ const t0=b*0.25,t1=t0+0.25;
+    let nb=0,sum=0; for(const x of wins){ if(x.hour>=t0&&x.hour<t1&&x.hr!=null){ sum+=x.hr*x.n_beats; nb+=x.n_beats; } }
+    if(!nb) continue; const col=hrZoneColor(sum/nb); if(!col) continue;
+    ctx.fillStyle=col; ctx.fillRect(sx(t0),area.y0,sx(t1)-sx(t0),area.y1-area.y0); }
+  // dotted burden gridlines every 10%
+  ctx.save(); ctx.setLineDash([2,3]); ctx.strokeStyle='#bbb'; ctx.fillStyle='#666'; ctx.font='10px sans-serif'; ctx.textAlign='right'; ctx.textBaseline='middle';
+  for(const g of [10,20,30,40,50]){ const py=syB(g); ctx.beginPath(); ctx.moveTo(area.x0,py); ctx.lineTo(area.x1,py); ctx.stroke(); ctx.fillText(g+'%',area.x0-3,py); }
+  ctx.restore();
+  // axis box + x ticks (every 3h) + right HR ticks
+  ctx.strokeStyle='#ccc'; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(area.x0,area.y0); ctx.lineTo(area.x0,area.y1); ctx.lineTo(area.x1,area.y1); ctx.stroke();
+  ctx.fillStyle='#666'; ctx.font='10px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='top';
+  for(let hh=0;hh<=24;hh+=3){ ctx.fillText(String(hh).padStart(2,'0'),sx(hh),area.y1+3); }
+  ctx.textAlign='left'; ctx.textBaseline='middle'; ctx.fillStyle='#aaa';
+  for(const hv of [60,100,140]){ ctx.fillText(hv,area.x1+3,syH(hv)); }
+  // HR line (grey), broken across recording gaps
+  ctx.strokeStyle='rgba(110,110,110,0.55)'; ctx.lineWidth=1; ctx.beginPath(); let pen=false;
+  for(let i=0;i<wins.length;i++){ const x=wins[i]; if(x.hr==null){pen=false;continue;}
+    const px=sx(x.hour), py=syH(Math.max(HRMIN,Math.min(HRMAX,x.hr)));
+    if(pen && (x.hour-wins[i-1].hour)<0.1) ctx.lineTo(px,py); else ctx.moveTo(px,py); pen=true; }
+  ctx.stroke();
+  // burden dots (left axis, capped at 50)
+  const drawn=[];
+  for(const x of wins){ if(x.burden==null) continue; const px=sx(x.hour), py=syB(Math.min(50,x.burden));
+    ctx.fillStyle = x.burden>0? 'rgba(37,99,235,.6)':'rgba(140,140,140,.3)';
+    ctx.beginPath(); ctx.arc(px,py,1.8,0,7); ctx.fill(); drawn.push({px,py,x}); }
+  attachHover(canvas,tip,(mx,my)=>{ let best=null,bd=49; for(const dd of drawn){ const e=(dd.px-mx)**2+(dd.py-my)**2; if(e<bd){bd=e;best=dd;} }
+    if(!best) return null; const x=best.x, hh=Math.floor(x.hour), mm=Math.round((x.hour%1)*60);
+    return {px:best.px,py:best.py,html:`${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')} · ${x.burden.toFixed(1)}% · ${x.hr!=null?Math.round(x.hr)+' bpm':'-'}`}; });
+}
+
 // ---- rhythm states stacked per hour ----
 function renderRhythm(){
   const canvas=document.getElementById('rhythm'); const {ctx,w,h}=setup(canvas,260);
@@ -388,7 +457,7 @@ function header(){
   tb.innerHTML=s.per_day.map(d=>`<tr><td>${d.date}</td><td>${(d.n_windows*30/3600).toFixed(1)}</td><td>${nice(d.n_beats)}</td><td>${nice(d.n_pvc)}</td><td>${d.burden_pct!=null?d.burden_pct:'-'}</td></tr>`).join('');
 }
 
-function renderAll(){ header(); render('hr'); render('tod'); render('day'); renderActivity(); renderRhythm(); }
+function renderAll(){ header(); render('hr'); render('tod'); render('day'); renderDayView(); renderActivity(); renderRhythm(); }
 renderAll();
 let rt; window.addEventListener('resize',()=>{ clearTimeout(rt); rt=setTimeout(renderAll,150); });
 </script>
