@@ -168,7 +168,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
   <div class="panel">
     <h2>Day view</h2>
     <div class="note">One row per day, midnight to midnight. PVC burden on the left axis (capped at 50%); the grey line is heart rate (right axis, ticks at the zone cut-offs). Background is the 15-minute average heart-rate zone; white = no data.</div>
-    <div class="toggle" id="dayview-toggle"><button data-mode="dots" class="active">Windows</button><button data-mode="avg">5-min average</button></div>
+    <div class="toggle" id="dayview-toggle"><button data-mode="dots">Windows</button><button data-mode="avg" class="active">5-min average</button></div>
     <div class="legend">
       <span><span class="sw" style="background:#dcebff"></span>rest &lt;65</span>
       <span><span class="sw" style="background:#dff3df"></span>active &lt;95</span>
