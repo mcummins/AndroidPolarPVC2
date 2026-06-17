@@ -426,7 +426,7 @@ function drawDay(canvas, tip, wins){
   ctx.fillStyle='#666'; ctx.font='10px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='top';
   for(let hh=0;hh<=24;hh+=3){ ctx.fillText(String(hh).padStart(2,'0'),sx(hh),area.y1+3); }
   ctx.textAlign='left'; ctx.textBaseline='middle'; ctx.fillStyle='#999';
-  for(const hv of [65,95,125]){ const py=syH(hv); ctx.fillText(hv,area.x1+3,py);
+  for(const hv of [65,95,125,155]){ const py=syH(hv); ctx.fillText(hv,area.x1+3,py);
     ctx.strokeStyle='#e3e3e3'; ctx.beginPath(); ctx.moveTo(area.x1-3,py); ctx.lineTo(area.x1,py); ctx.stroke(); }
   // HR line (grey), broken across recording gaps
   ctx.strokeStyle='rgba(110,110,110,0.55)'; ctx.lineWidth=1; ctx.beginPath(); let pen=false;
