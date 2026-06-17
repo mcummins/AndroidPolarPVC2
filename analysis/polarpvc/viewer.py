@@ -102,7 +102,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
 <title>ECG review</title>
 <style>
   :root { --blue:#2563eb; --red:#d62828; --green:#1c9e63; --gray:#9aa0a6; --amber:#e0a800;
-          --ink:#1a1a1a; --muted:#666; --panel:#fff; --line:#e6e6e6; }
+          --violet:#7c3aed; --ink:#1a1a1a; --muted:#666; --panel:#fff; --line:#e6e6e6; }
   * { box-sizing: border-box; }
   body { font-family:-apple-system,BlinkMacSystemFont,"Segoe UI",Roboto,Helvetica,Arial,sans-serif;
          color:var(--ink); margin:0; padding:16px; background:#fafafa; }
@@ -127,6 +127,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
   .vb-pvc.sel    { background:var(--red); color:#fff; border-color:var(--red); }
   .vb-artifact.sel { background:var(--gray); color:#fff; border-color:var(--gray); }
   .vb-unsure.sel { background:var(--amber); color:#fff; border-color:var(--amber); }
+  .vb-badpeak.sel { background:var(--violet); color:#fff; border-color:var(--violet); }
   canvas { width:100%; display:block; }
   #ov { height:64px; cursor:pointer; }
   #ecg { height:360px; cursor:crosshair; }
@@ -174,6 +175,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
       <span><span class="sw" style="background:var(--red)"></span>classifier: PVC</span>
       <span><span class="sw" style="background:var(--gray)"></span>classifier: artifact</span>
       <span>▲ your verdict</span>
+      <span><span class="sw" style="background:var(--violet)"></span>verdict: bad peak (not a real beat)</span>
       <span>grid: 0.2 s × 0.5 mV</span>
     </div>
   </div>
@@ -190,6 +192,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
         <button class="vb-normal"   data-v="normal">Normal <kbd>N</kbd></button>
         <button class="vb-pvc"      data-v="pvc">PVC <kbd>P</kbd></button>
         <button class="vb-artifact" data-v="artifact">Artifact <kbd>A</kbd></button>
+        <button class="vb-badpeak"  data-v="badpeak">Bad Peak <kbd>B</kbd></button>
         <button class="vb-unsure"   data-v="unsure">Unsure <kbd>U</kbd></button>
         <button class="vb-clear"    data-v="">Clear <kbd>X</kbd></button>
       </div>
@@ -212,9 +215,10 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
 
   <div class="hint">
     <b>How to review:</b> jump beat-to-beat or PVC-to-PVC, judge each beat from the strip + features, and press
-    <kbd>N</kbd>/<kbd>P</kbd>/<kbd>A</kbd>/<kbd>U</kbd> to record your call. The agreement panel updates over the beats you've
+    <kbd>N</kbd>/<kbd>P</kbd>/<kbd>A</kbd>/<kbd>B</kbd>/<kbd>U</kbd> to record your call (<kbd>B</kbd> = bad peak: a spurious
+    detection that isn't a real beat). The agreement panel updates over the beats you've
     reviewed only. &nbsp; <b>Keys:</b> <kbd>←</kbd>/<kbd>→</kbd> pan · <kbd>,</kbd>/<kbd>.</kbd> prev/next beat ·
-    <kbd>[</kbd>/<kbd>]</kbd> prev/next PVC · <kbd>D</kbd> next disagreement · <kbd>N P A U X</kbd> verdict. Verdicts are saved
+    <kbd>[</kbd>/<kbd>]</kbd> prev/next PVC · <kbd>D</kbd> next disagreement · <kbd>N P A B U X</kbd> verdict. Verdicts are saved
     in this browser; use Export to save them as CSV for re-tuning.
   </div>
 </div>
@@ -223,7 +227,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
 const DATA = /*DATA*/;
 const SIG = DATA.sig, FS = DATA.fs, BEATS = DATA.beats, SEGS = DATA.segments;
 const NS = SIG.length;
-const COLOR = {normal:'#1c9e63', pvc:'#d62828', artifact:'#9aa0a6', unsure:'#e0a800'};
+const COLOR = {normal:'#1c9e63', pvc:'#d62828', artifact:'#9aa0a6', unsure:'#e0a800', badpeak:'#7c3aed'};
 const STORE_KEY = 'pvcreview:' + DATA.rec_id;
 
 // ---- per-sample absolute time via segment table ----
@@ -399,11 +403,15 @@ function nextDisagreement(){
 
 // ---------- agreement stats ----------
 function userIsPvc(v){ return v==='pvc'; }
-function disagrees(b,v){ if(!v||v==='unsure') return false; return userIsPvc(v) !== !!b.pvc; }
+// 'badpeak' (a spurious detection, not a real beat) and 'unsure' are detection-
+// quality labels, not PVC calls, so they are excluded from the PVC confusion
+// matrix and disagreement list (but still recorded and exported as ground truth).
+function disagrees(b,v){ if(!v||v==='unsure'||v==='badpeak') return false; return userIsPvc(v) !== !!b.pvc; }
 function updateStats(){
-  let tp=0,fp=0,fn=0,tn=0,reviewed=0,unsure=0;
+  let tp=0,fp=0,fn=0,tn=0,reviewed=0,unsure=0,badpeak=0;
   for(const b of BEATS){ const v=verdicts[b.k]; if(!v) continue;
-    if(v==='unsure'){ unsure++; continue; } reviewed++;
+    if(v==='unsure'){ unsure++; continue; }
+    if(v==='badpeak'){ badpeak++; continue; } reviewed++;
     const up=userIsPvc(v), cp=!!b.pvc;
     if(up&&cp)tp++; else if(!up&&cp)fp++; else if(up&&!cp)fn++; else tn++;
   }
@@ -412,7 +420,7 @@ function updateStats(){
   const acc  = reviewed? (tp+tn)/reviewed : null;
   const pct=x=>x==null?'—':(100*x).toFixed(0)+'%';
   document.getElementById('agree').innerHTML =
-    `Reviewed <b>${reviewed}</b> beats (${unsure} unsure) of ${BEATS.length}.<br>`+
+    `Reviewed <b>${reviewed}</b> beats (${unsure} unsure, ${badpeak} bad peaks) of ${BEATS.length}.<br>`+
     `<div style="margin-top:6px; display:flex; gap:18px; flex-wrap:wrap">`+
     `<span>Sensitivity <b>${pct(sens)}</b><br><span class="legend">PVCs you found that it caught</span></span>`+
     `<span>Precision <b>${pct(prec)}</b><br><span class="legend">its PVC calls you agree with</span></span>`+
@@ -438,7 +446,7 @@ function exportCsv(){
   const head=['beat_index','sample_index','time_s','clock','classifier_is_pvc','classifier_reasons','your_verdict','agree'];
   const lines=[head.join(',')];
   for(const b of BEATS){ const v=verdicts[b.k]||''; if(!v) continue;
-    const agree = v==='unsure'? '' : (disagrees(b,v)? '0':'1');
+    const agree = (v==='unsure'||v==='badpeak')? '' : (disagrees(b,v)? '0':'1');
     lines.push([b.k,b.i,b.t.toFixed(3),clock(b.t),b.pvc,'"'+(b.r||'')+'"',v,agree].join(','));
   }
   const blob=new Blob([lines.join('\n')],{type:'text/csv'});
@@ -494,6 +502,7 @@ document.addEventListener('keydown',e=>{
   else if(k==='n'||k==='N'){ setVerdict('normal'); }
   else if(k==='p'||k==='P'){ setVerdict('pvc'); }
   else if(k==='a'||k==='A'){ setVerdict('artifact'); }
+  else if(k==='b'||k==='B'){ setVerdict('badpeak'); }
   else if(k==='u'||k==='U'){ setVerdict('unsure'); }
   else if(k==='x'||k==='X'){ setVerdict(''); }
 });
