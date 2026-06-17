@@ -389,7 +389,7 @@ function computeZones(){
 }
 
 // ---- Day view: one chart per day, midnight..midnight ----
-let dayMode='dots';
+let dayMode='avg';
 function renderDayView(){
   computeZones();
   const host=document.getElementById('dayview'); host.innerHTML='';
@@ -434,7 +434,7 @@ function drawDay(canvas, tip, wins){
     const px=sx(x.hour), py=syH(Math.max(HRMIN,Math.min(HRMAX,x.hr)));
     if(pen && (x.hour-wins[k-1].hour)<0.1) ctx.lineTo(px,py); else ctx.moveTo(px,py); pen=true; }
   ctx.stroke();
-  const drawn=[];
+  const drawn=[];   // hover hit-targets: {px,py,hour,val,hr}
   if(dayMode==='avg'){
     // red 5-minute centred moving average of burden (beat-weighted), broken on gaps
     const HALF=2.5/60; ctx.strokeStyle='#d62828'; ctx.lineWidth=1.5; ctx.beginPath();
@@ -443,17 +443,18 @@ function drawDay(canvas, tip, wins){
       while(hi<wins.length && wins[hi].hour<=c+HALF){ sP+=wins[hi].n_pvc; sB+=wins[hi].n_beats; hi++; }
       while(lo<wins.length && wins[lo].hour<c-HALF){ sP-=wins[lo].n_pvc; sB-=wins[lo].n_beats; lo++; }
       const avg=sB?100*sP/sB:0; const px=sx(c), py=syB(Math.min(50,avg));
-      if(pen2 && (c-wins[k-1].hour)<0.1) ctx.lineTo(px,py); else ctx.moveTo(px,py); pen2=true; }
+      if(pen2 && (c-wins[k-1].hour)<0.1) ctx.lineTo(px,py); else ctx.moveTo(px,py); pen2=true;
+      drawn.push({px,py,hour:c,val:avg,hr:wins[k].hr}); }
     ctx.stroke();
   } else {
     // per-window burden dots (left axis, capped at 50)
     for(const x of wins){ if(x.burden==null) continue; const px=sx(x.hour), py=syB(Math.min(50,x.burden));
       ctx.fillStyle = x.burden>0? 'rgba(37,99,235,.6)':'rgba(140,140,140,.3)';
-      ctx.beginPath(); ctx.arc(px,py,1.8,0,7); ctx.fill(); drawn.push({px,py,x}); }
+      ctx.beginPath(); ctx.arc(px,py,1.8,0,7); ctx.fill(); drawn.push({px,py,hour:x.hour,val:x.burden,hr:x.hr}); }
   }
   attachHover(canvas,tip,(mx,my)=>{ let best=null,bd=49; for(const dd of drawn){ const e=(dd.px-mx)**2+(dd.py-my)**2; if(e<bd){bd=e;best=dd;} }
-    if(!best) return null; const x=best.x, hh=Math.floor(x.hour), mm=Math.round((x.hour%1)*60);
-    return {px:best.px,py:best.py,html:`${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')} · ${x.burden.toFixed(1)}% · ${x.hr!=null?Math.round(x.hr)+' bpm':'-'}`}; });
+    if(!best) return null; const hh=Math.floor(best.hour), mm=Math.round((best.hour%1)*60);
+    return {px:best.px,py:best.py,html:`${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')} · ${best.val.toFixed(1)}% · ${best.hr!=null?Math.round(best.hr)+' bpm':'-'}`}; });
 }
 document.querySelectorAll('#dayview-toggle button').forEach(btn=>{ btn.onclick=()=>{
   document.querySelectorAll('#dayview-toggle button').forEach(b=>b.classList.remove('active'));
