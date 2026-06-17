@@ -10,6 +10,9 @@ import com.androidplot.xy.StepMode
 import com.androidplot.xy.XYPlot
 import com.androidplot.xy.XYRegionFormatter
 import com.androidplot.xy.XYSeriesFormatter
+import kotlin.math.ceil
+import kotlin.math.floor
+import kotlin.math.max
 
 class ECGplotter (private var mActivity: MainActivity?, private var Plot: XYPlot?) {
     private var nData: Int = 0
@@ -19,8 +22,13 @@ class ECGplotter (private var mActivity: MainActivity?, private var Plot: XYPlot
         private const val SEC_TO_PLOT: Double = 10.0   // Show this many seconds
         private const val N_TOTAL_POINTS: Int = 130*10   // corresponding number of ECG data points
         const val N_REPLAY_POINTS: Int = 130*10   // samples to replay when restoring the plot
-        private const val ECG_Y_MIN: Double = -1.2
-        private const val ECG_Y_MAX: Double = 3.0
+        // initial y-range shown before data arrives; the axis then auto-fits to
+        // the visible signal (updateRangeBoundaries)
+        private const val ECG_Y_MIN_INIT: Double = -1.5
+        private const val ECG_Y_MAX_INIT: Double = 1.5
+        private const val Y_STEP: Double = 0.5            // axis step + bound quantization (mV)
+        private const val Y_PAD_FRAC: Double = 0.15       // headroom above/below the visible peaks
+        private const val Y_MIN_SPAN: Double = 1.5        // never zoom in tighter than this (mV)
     }
 
     // ECG
@@ -63,9 +71,10 @@ class ECGplotter (private var mActivity: MainActivity?, private var Plot: XYPlot
 
     fun setupPlot() {
         try {
-            // range (y-axis)
-            Plot!!.setRangeBoundaries(ECG_Y_MIN, ECG_Y_MAX, BoundaryMode.FIXED)
-            Plot!!.setRangeStep(StepMode.INCREMENT_BY_VAL, 0.5)
+            // range (y-axis): start with a sane symmetric range, then auto-fit
+            // to the visible signal once data flows (updateRangeBoundaries)
+            Plot!!.setRangeBoundaries(ECG_Y_MIN_INIT, ECG_Y_MAX_INIT, BoundaryMode.FIXED)
+            Plot!!.setRangeStep(StepMode.INCREMENT_BY_VAL, Y_STEP)
             Plot!!.setUserRangeOrigin(0.0)
 
             update()
@@ -157,9 +166,40 @@ class ECGplotter (private var mActivity: MainActivity?, private var Plot: XYPlot
         Plot!!.setDomainStep(StepMode.INCREMENT_BY_VAL, 1.0)
     }
 
+    /**
+     * Auto-fit the y-axis to the peaks currently on screen, so neither polarity
+     * is clipped — the QRS is negative-dominant on some electrode placements, so
+     * a fixed range cut off the downward peaks (and their markers). Bounds are
+     * padded and quantized to [Y_STEP] so the axis stays steady beat-to-beat and
+     * rescales only when the signal amplitude actually changes.
+     */
+    fun updateRangeBoundaries() {
+        val ys = seriesECG!!.getyVals() ?: return
+        if (ys.isEmpty()) return
+        var lo = Double.POSITIVE_INFINITY
+        var hi = Double.NEGATIVE_INFINITY
+        for (n in ys) {
+            val v = n?.toDouble() ?: continue
+            if (!v.isFinite()) continue
+            if (v < lo) lo = v
+            if (v > hi) hi = v
+        }
+        if (lo > hi) return
+        val pad = max(Y_STEP, (hi - lo) * Y_PAD_FRAC)
+        var rngMin = floor((lo - pad) / Y_STEP) * Y_STEP
+        var rngMax = ceil((hi + pad) / Y_STEP) * Y_STEP
+        if (rngMax - rngMin < Y_MIN_SPAN) {
+            val c = (rngMax + rngMin) / 2.0
+            rngMin = floor((c - Y_MIN_SPAN / 2.0) / Y_STEP) * Y_STEP
+            rngMax = ceil((c + Y_MIN_SPAN / 2.0) / Y_STEP) * Y_STEP
+        }
+        Plot!!.setRangeBoundaries(rngMin, rngMax, BoundaryMode.FIXED)
+    }
+
     fun update() {
         if (updatePlot) {
             updateDomainBoundaries()
+            updateRangeBoundaries()
             mActivity!!.runOnUiThread { Plot!!.redraw() }
             updatePlot = false
         }
