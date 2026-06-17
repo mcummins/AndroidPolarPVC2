@@ -167,14 +167,22 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
 
   <div class="panel">
     <h2>Day view</h2>
-    <div class="note">One row per day, midnight to midnight. Dots are 30-second PVC-burden windows (left axis, capped at 50%); the grey line is heart rate (right axis). Background is the 15-minute average heart-rate zone; white = no data.</div>
+    <div class="note">One row per day, midnight to midnight. PVC burden on the left axis (capped at 50%); the grey line is heart rate (right axis, ticks at the zone cut-offs). Background is the 15-minute average heart-rate zone; white = no data.</div>
+    <div class="toggle" id="dayview-toggle"><button data-mode="dots" class="active">Windows</button><button data-mode="avg">5-min average</button></div>
     <div class="legend">
       <span><span class="sw" style="background:#dcebff"></span>rest &lt;65</span>
       <span><span class="sw" style="background:#dff3df"></span>active &lt;95</span>
       <span><span class="sw" style="background:#ffeccc"></span>light exercise &lt;125</span>
       <span><span class="sw" style="background:#ffd9d9"></span>exercise &ge;125</span>
+      <span><span class="sw" style="background:#e7daf6"></span>exercise recovery (2 h)</span>
     </div>
     <div id="dayview"></div>
+  </div>
+
+  <div class="panel">
+    <h2>PVC burden by zone</h2>
+    <div class="note">Average burden in each heart-rate zone, pooled across all days. Recovery is the 2 hours after any exercise block (&ge;125) ends.</div>
+    <div class="chartwrap"><canvas id="zone"></canvas><div class="tip" id="zone-tip"></div></div>
   </div>
 
   <div class="panel" id="act-panel" style="display:none">
@@ -359,15 +367,31 @@ function renderActivity(){
     tip:b=>`${b.a.label}<br>burden ${b.a.burden!=null?b.a.burden.toFixed(1):'-'}% · mean HR ${b.a.mean_hr!=null?Math.round(b.a.mean_hr):'-'}<br>${b.a.hours.toFixed(1)} h · ${b.a.n_pvc}/${nice(b.a.n_beats)} beats`});
 }
 
-// ---- Day view: one chart per day, midnight..midnight ----
-function hrZoneColor(hr){
-  if(hr==null) return null;
-  if(hr<65) return '#dcebff';      // rest
-  if(hr<95) return '#dff3df';      // active
-  if(hr<125) return '#ffeccc';     // light exercise
-  return '#ffd9d9';                // exercise
+// ---- heart-rate zones (incl. exercise recovery) ----
+const ZONE_FILL = {rest:'#dcebff', active:'#dff3df', light:'#ffeccc', exercise:'#ffd9d9', recovery:'#e7daf6'};
+const ZONE_ORDER = [['rest','rest <65'],['active','active <95'],['light','light exercise <125'],['exercise','exercise ≥125'],['recovery','exercise recovery']];
+const RECOVERY_S = 2*3600;
+let _zonesDone=false;
+// Assign each window a zone from the 15-min average HR, then override the 2 h
+// after any exercise block with 'recovery'. Cached on the window objects.
+function computeZones(){
+  if(_zonesDone) return; _zonesDone=true;
+  const W=DATA.windows; const BIN=900; const agg={};
+  for(const w of W){ if(w.hr==null) continue; const b=Math.floor(w.t/BIN); const a=agg[b]||(agg[b]={s:0,nb:0}); a.s+=w.hr*w.n_beats; a.nb+=w.n_beats; }
+  const base=w=>{ if(w.hr==null) return 'none'; const a=agg[Math.floor(w.t/BIN)]; const hr=a&&a.nb?a.s/a.nb:w.hr;
+    return hr<65?'rest':hr<95?'active':hr<125?'light':'exercise'; };
+  const order=W.map((w,i)=>i).sort((a,b)=>W[a].t-W[b].t);
+  let recUntil=-1;
+  for(const i of order){ const w=W[i]; const z=base(w);
+    if(z==='exercise'){ recUntil=w.t+RECOVERY_S; w._zone='exercise'; }
+    else if(z!=='none' && w.t<recUntil){ w._zone='recovery'; }
+    else { w._zone=z; } }
 }
+
+// ---- Day view: one chart per day, midnight..midnight ----
+let dayMode='dots';
 function renderDayView(){
+  computeZones();
   const host=document.getElementById('dayview'); host.innerHTML='';
   const byDay={}; for(const w of DATA.windows){ (byDay[w.day]=byDay[w.day]||[]).push(w); }
   for(const d of DATA.summary.dates){
@@ -385,35 +409,71 @@ function drawDay(canvas, tip, wins){
   const sx=lin(0,24,area.x0,area.x1);
   const syB=lin(0,50,area.y1,area.y0);          // burden % (left)
   const HRMIN=40,HRMAX=180, syH=lin(HRMIN,HRMAX,area.y1,area.y0); // HR (right)
-  // background: 15-minute mean-HR zone bands
-  for(let b=0;b<96;b++){ const t0=b*0.25,t1=t0+0.25;
-    let nb=0,sum=0; for(const x of wins){ if(x.hour>=t0&&x.hour<t1&&x.hr!=null){ sum+=x.hr*x.n_beats; nb+=x.n_beats; } }
-    if(!nb) continue; const col=hrZoneColor(sum/nb); if(!col) continue;
-    ctx.fillStyle=col; ctx.fillRect(sx(t0),area.y0,sx(t1)-sx(t0),area.y1-area.y0); }
+  // background: contiguous same-zone runs (zone from 15-min HR, +recovery)
+  let i=0;
+  while(i<wins.length){ const z=wins[i]._zone; let j=i;
+    while(j+1<wins.length && wins[j+1]._zone===z && (wins[j+1].hour-wins[j].hour)<0.1) j++;
+    const col=ZONE_FILL[z];
+    if(col){ const x0=sx(wins[i].hour), x1=sx(wins[j].hour+1/120);
+      ctx.fillStyle=col; ctx.fillRect(x0,area.y0,Math.max(1,x1-x0),area.y1-area.y0); }
+    i=j+1; }
   // dotted burden gridlines every 10%
   ctx.save(); ctx.setLineDash([2,3]); ctx.strokeStyle='#bbb'; ctx.fillStyle='#666'; ctx.font='10px sans-serif'; ctx.textAlign='right'; ctx.textBaseline='middle';
   for(const g of [10,20,30,40,50]){ const py=syB(g); ctx.beginPath(); ctx.moveTo(area.x0,py); ctx.lineTo(area.x1,py); ctx.stroke(); ctx.fillText(g+'%',area.x0-3,py); }
   ctx.restore();
-  // axis box + x ticks (every 3h) + right HR ticks
+  // axis box + x ticks (every 3h) + right HR ticks at the zone cut-offs
   ctx.strokeStyle='#ccc'; ctx.lineWidth=1; ctx.beginPath(); ctx.moveTo(area.x0,area.y0); ctx.lineTo(area.x0,area.y1); ctx.lineTo(area.x1,area.y1); ctx.stroke();
   ctx.fillStyle='#666'; ctx.font='10px sans-serif'; ctx.textAlign='center'; ctx.textBaseline='top';
   for(let hh=0;hh<=24;hh+=3){ ctx.fillText(String(hh).padStart(2,'0'),sx(hh),area.y1+3); }
-  ctx.textAlign='left'; ctx.textBaseline='middle'; ctx.fillStyle='#aaa';
-  for(const hv of [60,100,140]){ ctx.fillText(hv,area.x1+3,syH(hv)); }
+  ctx.textAlign='left'; ctx.textBaseline='middle'; ctx.fillStyle='#999';
+  for(const hv of [65,95,125]){ const py=syH(hv); ctx.fillText(hv,area.x1+3,py);
+    ctx.strokeStyle='#e3e3e3'; ctx.beginPath(); ctx.moveTo(area.x1-3,py); ctx.lineTo(area.x1,py); ctx.stroke(); }
   // HR line (grey), broken across recording gaps
   ctx.strokeStyle='rgba(110,110,110,0.55)'; ctx.lineWidth=1; ctx.beginPath(); let pen=false;
-  for(let i=0;i<wins.length;i++){ const x=wins[i]; if(x.hr==null){pen=false;continue;}
+  for(let k=0;k<wins.length;k++){ const x=wins[k]; if(x.hr==null){pen=false;continue;}
     const px=sx(x.hour), py=syH(Math.max(HRMIN,Math.min(HRMAX,x.hr)));
-    if(pen && (x.hour-wins[i-1].hour)<0.1) ctx.lineTo(px,py); else ctx.moveTo(px,py); pen=true; }
+    if(pen && (x.hour-wins[k-1].hour)<0.1) ctx.lineTo(px,py); else ctx.moveTo(px,py); pen=true; }
   ctx.stroke();
-  // burden dots (left axis, capped at 50)
   const drawn=[];
-  for(const x of wins){ if(x.burden==null) continue; const px=sx(x.hour), py=syB(Math.min(50,x.burden));
-    ctx.fillStyle = x.burden>0? 'rgba(37,99,235,.6)':'rgba(140,140,140,.3)';
-    ctx.beginPath(); ctx.arc(px,py,1.8,0,7); ctx.fill(); drawn.push({px,py,x}); }
+  if(dayMode==='avg'){
+    // red 5-minute centred moving average of burden (beat-weighted), broken on gaps
+    const HALF=2.5/60; ctx.strokeStyle='#d62828'; ctx.lineWidth=1.5; ctx.beginPath();
+    let lo=0,hi=0,sP=0,sB=0,pen2=false;
+    for(let k=0;k<wins.length;k++){ const c=wins[k].hour;
+      while(hi<wins.length && wins[hi].hour<=c+HALF){ sP+=wins[hi].n_pvc; sB+=wins[hi].n_beats; hi++; }
+      while(lo<wins.length && wins[lo].hour<c-HALF){ sP-=wins[lo].n_pvc; sB-=wins[lo].n_beats; lo++; }
+      const avg=sB?100*sP/sB:0; const px=sx(c), py=syB(Math.min(50,avg));
+      if(pen2 && (c-wins[k-1].hour)<0.1) ctx.lineTo(px,py); else ctx.moveTo(px,py); pen2=true; }
+    ctx.stroke();
+  } else {
+    // per-window burden dots (left axis, capped at 50)
+    for(const x of wins){ if(x.burden==null) continue; const px=sx(x.hour), py=syB(Math.min(50,x.burden));
+      ctx.fillStyle = x.burden>0? 'rgba(37,99,235,.6)':'rgba(140,140,140,.3)';
+      ctx.beginPath(); ctx.arc(px,py,1.8,0,7); ctx.fill(); drawn.push({px,py,x}); }
+  }
   attachHover(canvas,tip,(mx,my)=>{ let best=null,bd=49; for(const dd of drawn){ const e=(dd.px-mx)**2+(dd.py-my)**2; if(e<bd){bd=e;best=dd;} }
     if(!best) return null; const x=best.x, hh=Math.floor(x.hour), mm=Math.round((x.hour%1)*60);
     return {px:best.px,py:best.py,html:`${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')} · ${x.burden.toFixed(1)}% · ${x.hr!=null?Math.round(x.hr)+' bpm':'-'}`}; });
+}
+document.querySelectorAll('#dayview-toggle button').forEach(btn=>{ btn.onclick=()=>{
+  document.querySelectorAll('#dayview-toggle button').forEach(b=>b.classList.remove('active'));
+  btn.classList.add('active'); dayMode=btn.dataset.mode; renderDayView(); }; });
+
+// ---- PVC burden by heart-rate zone (categorical bars, pooled over all days) ----
+function renderZone(){
+  computeZones();
+  const agg={}; for(const [k] of ZONE_ORDER) agg[k]=[0,0,0]; // n_beats, n_pvc, n_windows
+  for(const w of DATA.windows){ const a=agg[w._zone]; if(!a) continue; a[0]+=w.n_beats; a[1]+=w.n_pvc; a[2]++; }
+  const A=ZONE_ORDER.map(([k,lab])=>({key:k,label:lab,burden:agg[k][0]?100*agg[k][1]/agg[k][0]:null,
+    n_beats:agg[k][0],n_pvc:agg[k][1],hours:agg[k][2]*30/3600})).filter(a=>a.n_beats>0);
+  if(!A.length) return;
+  const labels=A.map(a=>a.label);
+  const maxB=Math.max(5, Math.ceil(Math.max(...A.map(a=>a.burden||0))/5)*5);
+  const bins=A.map((a,i)=>({center:i+0.5,binw:1,mean:a.burden,a}));
+  bars('zone',bins,{xdomain:[0,A.length], ydomain:[0,maxB], binw:1,
+    xticks:A.map((a,i)=>i+0.5), xfmt:t=>{ const l=labels[Math.floor(t)]||''; return l.length>13?l.slice(0,12)+'…':l; },
+    xlabel:'Heart-rate zone', ylabel:'PVC burden (%)',
+    tip:b=>`${b.a.label}<br>burden ${b.a.burden!=null?b.a.burden.toFixed(1):'-'}%<br>${b.a.hours.toFixed(1)} h · ${b.a.n_pvc}/${nice(b.a.n_beats)} beats`});
 }
 
 // ---- rhythm states stacked per hour ----
@@ -457,7 +517,7 @@ function header(){
   tb.innerHTML=s.per_day.map(d=>`<tr><td>${d.date}</td><td>${(d.n_windows*30/3600).toFixed(1)}</td><td>${nice(d.n_beats)}</td><td>${nice(d.n_pvc)}</td><td>${d.burden_pct!=null?d.burden_pct:'-'}</td></tr>`).join('');
 }
 
-function renderAll(){ header(); render('hr'); render('tod'); render('day'); renderDayView(); renderActivity(); renderRhythm(); }
+function renderAll(){ header(); render('hr'); render('tod'); render('day'); renderDayView(); renderZone(); renderActivity(); renderRhythm(); }
 renderAll();
 let rt; window.addEventListener('resize',()=>{ clearTimeout(rt); rt=setTimeout(renderAll,150); });
 </script>
