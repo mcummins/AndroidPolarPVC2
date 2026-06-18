@@ -66,11 +66,13 @@ def build_report(
     out_path: str,
     title: str = "PVC exploration",
     activity: list[ActivityBurden] | None = None,
+    viewers: dict[str, str] | None = None,
 ) -> dict:
     summary = _summary(windows)
     payload = {
         "title": title,
         "summary": summary,
+        "viewers": viewers or {},
         "activity": [
             {
                 "label": a.label,
@@ -92,6 +94,7 @@ def build_report(
                 "day": w.date,
                 "n_beats": w.n_beats,
                 "n_pvc": w.n_pvc,
+                "rec": w.source,
                 "states": {s: round(w.state_fractions.get(s, 0.0), 4) for s in RHYTHM_STATES},
             }
             for w in windows
@@ -167,7 +170,7 @@ _HTML_TEMPLATE = r"""<!DOCTYPE html>
 
   <div class="panel">
     <h2>Day view</h2>
-    <div class="note">One row per day, midnight to midnight. PVC burden on the left axis (capped at 50%); the grey line is heart rate (right axis, ticks at the zone cut-offs). Background is the 15-minute average heart-rate zone; white = no data.</div>
+    <div class="note">One row per day, midnight to midnight. PVC burden on the left axis (capped at 50%); the grey line is heart rate (right axis, ticks at the zone cut-offs). Background is the 15-minute average heart-rate zone; white = no data. <b>Double-click</b> a point to open that recording's ECG viewer (if one has been generated).</div>
     <div class="toggle" id="dayview-toggle"><button data-mode="dots">Windows</button><button data-mode="avg" class="active">5-min average</button></div>
     <div class="legend">
       <span><span class="sw" style="background:#dcebff"></span>rest &lt;65</span>
@@ -444,17 +447,24 @@ function drawDay(canvas, tip, wins){
       while(lo<wins.length && wins[lo].hour<c-HALF){ sP-=wins[lo].n_pvc; sB-=wins[lo].n_beats; lo++; }
       const avg=sB?100*sP/sB:0; const px=sx(c), py=syB(Math.min(50,avg));
       if(pen2 && (c-wins[k-1].hour)<0.1) ctx.lineTo(px,py); else ctx.moveTo(px,py); pen2=true;
-      drawn.push({px,py,hour:c,val:avg,hr:wins[k].hr}); }
+      drawn.push({px,py,hour:c,val:avg,hr:wins[k].hr,rec:wins[k].rec,t:wins[k].t}); }
     ctx.stroke();
   } else {
     // per-window burden dots (left axis, capped at 50)
     for(const x of wins){ if(x.burden==null) continue; const px=sx(x.hour), py=syB(Math.min(50,x.burden));
       ctx.fillStyle = x.burden>0? 'rgba(37,99,235,.6)':'rgba(140,140,140,.3)';
-      ctx.beginPath(); ctx.arc(px,py,1.8,0,7); ctx.fill(); drawn.push({px,py,hour:x.hour,val:x.burden,hr:x.hr}); }
+      ctx.beginPath(); ctx.arc(px,py,1.8,0,7); ctx.fill(); drawn.push({px,py,hour:x.hour,val:x.burden,hr:x.hr,rec:x.rec,t:x.t}); }
   }
-  attachHover(canvas,tip,(mx,my)=>{ let best=null,bd=49; for(const dd of drawn){ const e=(dd.px-mx)**2+(dd.py-my)**2; if(e<bd){bd=e;best=dd;} }
+  const nearest=(mx,my)=>{ let best=null,bd=49; for(const dd of drawn){ const e=(dd.px-mx)**2+(dd.py-my)**2; if(e<bd){bd=e;best=dd;} } return best; };
+  attachHover(canvas,tip,(mx,my)=>{ const best=nearest(mx,my);
     if(!best) return null; const hh=Math.floor(best.hour), mm=Math.round((best.hour%1)*60);
-    return {px:best.px,py:best.py,html:`${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')} · ${best.val.toFixed(1)}% · ${best.hr!=null?Math.round(best.hr)+' bpm':'-'}`}; });
+    const hasView=best.rec && (DATA.viewers||{})[best.rec];
+    const foot=hasView? '<br><span style="opacity:.7">double-click: open ECG viewer</span>':'';
+    return {px:best.px,py:best.py,html:`${String(hh).padStart(2,'0')}:${String(mm).padStart(2,'0')} · ${best.val.toFixed(1)}% · ${best.hr!=null?Math.round(best.hr)+' bpm':'-'}${foot}`}; });
+  canvas.ondblclick=(e)=>{ const r=canvas.getBoundingClientRect(); const best=nearest(e.clientX-r.left,e.clientY-r.top);
+    if(!best) return; const uri=best.rec && (DATA.viewers||{})[best.rec];
+    if(uri) window.open(uri+'#t='+best.t,'_blank');
+    else alert('No ECG viewer has been generated for this segment'+(best.rec?' ('+best.rec+')':'')+'.\n\nGenerate one with:\n  python scripts/make_viewer.py <path-to-'+(best.rec||'ecg_*.csv')+'>'); };
 }
 document.querySelectorAll('#dayview-toggle button').forEach(btn=>{ btn.onclick=()=>{
   document.querySelectorAll('#dayview-toggle button').forEach(b=>b.classList.remove('active'));

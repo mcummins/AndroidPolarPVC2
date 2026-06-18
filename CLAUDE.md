@@ -123,6 +123,15 @@ activity tags from the events_*.csv[.gz] alongside). `scripts/make_demo.py`
 with HR-dependent burden + bigeminy bouts). Burden uses recorded windows
 only (gaps excluded, not zero-filled); times local.
 
+Drill-down: `make_report.py` also writes a `<rec>_viewer.html` next to each
+recording (skips existing ones; `--regenerate_viewers` forces a rebuild
+after re-tuning the classifier). Double-clicking a point in the report's
+Day-view opens that recording's viewer (`viewer.py`) at the clicked time
+via a `#t=<epoch>` hash → nearest-beat jump. Viewers embed
+`classify.CLASSIFIER_VERSION` (bump on any classifier change) and a
+generation timestamp, shown in the viewer header so a stale (skipped)
+viewer is distinguishable from a current one.
+
 ## Known issues / notes
 
 - `find_peaks` detects max one peak per half-batch (~0.28s) — may merge

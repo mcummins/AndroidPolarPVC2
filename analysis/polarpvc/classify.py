@@ -34,6 +34,12 @@ from dataclasses import dataclass
 
 from .features import BeatFeatures
 
+# Bump when the classifier logic or ClassifierConfig defaults change. The
+# offline viewers embed this; it is shown in the viewer header so a stale
+# viewer (skipped because it already existed) can be told from a current
+# one. Force a refresh with `make_report.py --regenerate_viewers`.
+CLASSIFIER_VERSION = "1.0"
+
 
 @dataclass
 class ClassifierConfig:

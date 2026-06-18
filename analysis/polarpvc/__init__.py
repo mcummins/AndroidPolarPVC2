@@ -9,7 +9,7 @@ the validated path.
 from .io import EcgRecord, load_ecg_csv
 from .detect import detect_beats
 from .features import extract_features, BeatFeatures
-from .classify import classify_beats, ClassifierConfig
+from .classify import classify_beats, ClassifierConfig, CLASSIFIER_VERSION
 from .pipeline import label_record, label_csv
 from .windows import compute_windows, Window
 from .report import build_report
@@ -22,6 +22,7 @@ __all__ = [
     "BeatFeatures",
     "classify_beats",
     "ClassifierConfig",
+    "CLASSIFIER_VERSION",
     "label_record",
     "label_csv",
     "compute_windows",

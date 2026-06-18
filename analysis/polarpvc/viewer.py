@@ -17,9 +17,11 @@ from __future__ import annotations
 
 import json
 import math
+from datetime import datetime
 
 import numpy as np
 
+from .classify import CLASSIFIER_VERSION
 from .io import Segment
 from .pipeline import LabeledBeats
 
@@ -37,8 +39,15 @@ def build_viewer(
     out_path: str,
     title: str = "ECG review",
     rec_id: str | None = None,
+    classifier_version: str | None = None,
+    generated: str | None = None,
 ) -> dict:
-    """Write a standalone HTML reviewer for one labeled recording."""
+    """Write a standalone HTML reviewer for one labeled recording.
+
+    classifier_version/generated are shown in the viewer header so a stale
+    viewer (one skipped because the file already existed) can be told apart
+    from a current one. They default to the running classifier version and
+    the current local time."""
     rec = result.record
     fs = float(rec.fs)
     sig = np.round(np.asarray(rec.mv) * 1000.0).astype(int)  # integer microvolts
@@ -74,6 +83,8 @@ def build_viewer(
     payload = {
         "title": title,
         "rec_id": rec_id or title,
+        "classifier_version": classifier_version or CLASSIFIER_VERSION,
+        "generated": generated or datetime.now().strftime("%Y-%m-%d %H:%M"),
         "fs": fs,
         "t0": float(rec.t[0]) if len(rec.t) else 0.0,
         "sig": sig.tolist(),
@@ -364,6 +375,7 @@ function selectBeat(k, recenter){
   document.getElementById('beatTag').innerHTML = `<span class="tag ${cl}">classifier: ${cl}</span>`;
   const rows=[
     ['time', clock(b.t) + '  (' + b.t.toFixed(2) + 's)'],
+    ['heart rate', b.rrb? Math.round(60/b.rrb)+' bpm  (instantaneous)' : '—'],
     ['RR before', b.rrb==null?'—':b.rrb.toFixed(3)+' s'],
     ['RR after', b.rra==null?'—':b.rra.toFixed(3)+' s'],
     ['baseline RR', b.base==null?'—':b.base.toFixed(3)+' s'],
@@ -510,7 +522,9 @@ document.addEventListener('keydown',e=>{
 // ---------- header ----------
 function header(){
   document.getElementById('title').textContent=DATA.title;
-  const dur=NS/FS; const span = (DATA.t0? clock(DATA.t0)+' → '+clock(DATA.t0+dur)+' · ':'') + (dur/60).toFixed(1)+' min · '+FS+' Hz';
+  const dur=NS/FS; let span = (DATA.t0? clock(DATA.t0)+' → '+clock(DATA.t0+dur)+' · ':'') + (dur/60).toFixed(1)+' min · '+FS+' Hz';
+  if(DATA.classifier_version) span += ' · classifier v'+DATA.classifier_version;
+  if(DATA.generated) span += ' · generated '+DATA.generated;
   document.getElementById('subtitle').textContent=span;
   const cards=[['Beats',DATA.n_beats],['Classifier PVCs',DATA.n_pvc],['Burden',DATA.burden+'%'],
     ['Segments',SEGS.length]];
@@ -518,7 +532,15 @@ function header(){
 }
 
 header();
-if(BEATS.length){ selectBeat(0); } else { draw(); }
+if(BEATS.length){
+  // deep-link: #t=<absolute epoch seconds> jumps to the nearest beat (used by
+  // the exploration report's Day-view double-click drill-down)
+  let start=0;
+  const ht=new URLSearchParams(location.hash.slice(1)).get('t');
+  if(ht!=null && ht!==''){ const target=+ht; let bd=Infinity;
+    for(const b of BEATS){ const d=Math.abs(b.t-target); if(d<bd){ bd=d; start=b.k; } } }
+  selectBeat(start);
+} else { draw(); }
 updateStats();
 let rt; window.addEventListener('resize',()=>{ clearTimeout(rt); rt=setTimeout(()=>{ ovEnv=null; draw(); },150); });
 </script>

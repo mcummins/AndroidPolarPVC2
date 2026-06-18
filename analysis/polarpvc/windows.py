@@ -57,6 +57,7 @@ class Window:
     hour_of_day: float  # 0..24, fractional, local time
     date: str  # YYYY-MM-DD, local
     state_fractions: dict = field(default_factory=dict)
+    source: str | None = None  # recording id (basename) this window came from
 
 
 def classify_rhythm(is_pvc: list[bool]) -> list[str]:
