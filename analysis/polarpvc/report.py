@@ -404,6 +404,10 @@ function renderDayView(){
     const cv=document.createElement('canvas'); const tip=document.createElement('div'); tip.className='tip';
     wrap.appendChild(cv); wrap.appendChild(tip); host.appendChild(lab); host.appendChild(wrap);
     drawDay(cv,tip,wins);
+    let nb=0,np=0; for(const x of wins){ nb+=x.n_beats; np+=x.n_pvc; }
+    const cap=document.createElement('div'); cap.className='note'; cap.style.cssText='margin:2px 2px 0; text-align:right';
+    cap.innerHTML = 'Day burden <b>'+(nb? (100*np/nb).toFixed(2)+'%':'—')+'</b>'+(nb? ' · '+nice(np)+'/'+nice(nb)+' beats':'');
+    host.appendChild(cap);
   }
 }
 function drawDay(canvas, tip, wins){
