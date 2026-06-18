@@ -65,6 +65,22 @@ class TestDetection(unittest.TestCase):
         result = label_record(ecg)
         self.assertEqual(sum(1 for l in result.labels if l.is_pvc), 0)
 
+    def test_short_segment_does_not_crash(self):
+        # A segment past the 0.5 s detection floor but shorter than the 1 s
+        # baseline window (73 samples at 130 Hz) must not crash _refine:
+        # np.convolve(mode="same") returns max(len(mv), len(kernel)) samples,
+        # so an unclamped 1 s kernel produced a baseline that couldn't
+        # broadcast against the segment. Regression for that ValueError.
+        from polarpvc.detect import _detect_in_array
+
+        fs = 130.0
+        n = 73
+        t = np.arange(n) / fs
+        mv = 0.1 * np.sin(2 * np.pi * 2.0 * t)
+        mv[30] += 1.5  # a QRS-like spike so detection reaches _refine
+        out = _detect_in_array(mv.astype(float), fs)
+        self.assertIsInstance(out, np.ndarray)
+
 
 class TestPvcClassification(unittest.TestCase):
     def test_clean_signal_perfect(self):

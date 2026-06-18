@@ -141,8 +141,11 @@ def _refine(mv, fs, peaks, window_s):
         return peaks
     w = max(1, int(round(window_s * fs)))
     # remove slow baseline (1 s moving average) so "largest absolute
-    # deflection" reflects the QRS, not baseline wander
-    base_win = max(1, int(fs))
+    # deflection" reflects the QRS, not baseline wander. Clamp the kernel to
+    # the segment length: np.convolve(mode="same") returns max(len(mv),
+    # len(kernel)) samples, so a kernel longer than a short segment (< 1 s)
+    # would yield a baseline that can't broadcast against mv.
+    base_win = max(1, min(int(fs), mv.size))
     baseline = np.convolve(mv, np.ones(base_win) / base_win, mode="same")
     detr = mv - baseline
     refined = []
